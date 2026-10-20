@@ -1,0 +1,90 @@
+#!/bin/sh
+# Mount the APPLE2 data partition, start the network and FujiNet-PC in the
+# background, fit the picture to the screen, run LinApple full screen, and
+# power off when it ends (F12).
+
+DATA=/media/apple2
+CONF=$DATA/linapple.conf
+LOG=/run/linapple.log
+
+export TZ="${TZ:-KST-9}"        # time shown on save slots
+hwclock -s -l 2>/dev/null       # the PC's clock keeps local time, as Windows does
+
+find_data_dev() {
+	# USB sticks and CF readers can show up a moment after boot.
+	i=0
+	while [ $i -lt 25 ]; do
+		dev=$(blkid 2>/dev/null | sed -n 's/^\([^:]*\):.*LABEL="APPLE2".*/\1/p' | head -n 1)
+		if [ -n "$dev" ]; then
+			echo "$dev"
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 0.2
+	done
+	return 1
+}
+
+mkdir -p "$DATA"
+DEV=$(find_data_dev)
+if [ -z "$DEV" ] || ! mount -t vfat -o rw,noatime,flush,umask=000,shortname=mixed,time_offset=540 "$DEV" "$DATA"; then
+	# No data partition: run anyway, but nothing is kept after power-off.
+	mount -t tmpfs -o size=64m tmpfs "$DATA"
+	NO_DATA=1
+fi
+
+mkdir -p "$DATA/disks" "$DATA/saves" "$DATA/fujinet/SD" "$DATA/.home"
+[ -f "$CONF" ] || cp /etc/linapple/linapple.conf "$CONF"
+
+# Network and FujiNet-PC come up on their own; the Apple boots meanwhile
+# and its FujiNet card waits a few seconds for FujiNet-PC.
+/usr/bin/apple2-net &
+/usr/bin/apple2-fujinet &
+
+# Fit the emulator to whatever mode GRUB gave the framebuffer.
+if [ -r /sys/class/graphics/fb0/virtual_size ]; then
+	size=$(cat /sys/class/graphics/fb0/virtual_size)
+	W=${size%,*}
+	H=${size#*,}
+	sed -i -e "s/^Screen Width[ \t]*=.*/Screen Width = $W\r/" \
+	       -e "s/^Screen Height[ \t]*=.*/Screen Height = $H\r/" "$CONF"
+fi
+
+# AC'97 and HD Audio chips often start muted.
+for ctl in Master PCM Front Headphone Speaker; do
+	amixer -q sset "$ctl" 85% unmute 2>/dev/null
+done
+
+export HOME="$DATA/.home"
+export SDL_VIDEODRIVER=fbcon
+export SDL_FBDEV=/dev/fb0
+export SDL_NOMOUSE=1
+export SDL_AUDIODRIVER=alsa
+
+cd "$DATA" || cd /
+/usr/bin/linapple -c "$CONF" -f >"$LOG" 2>&1
+rc=$?
+
+sync
+if [ $rc -ne 0 ]; then
+	# Leave the reason on screen instead of powering off.
+	cp "$LOG" "$DATA/linapple.log" 2>/dev/null
+	printf '\033c'
+	echo "LinApple stopped with error $rc."
+	[ -n "$NO_DATA" ] && echo "(The APPLE2 data partition was not found.)"
+	echo
+	tail -n 15 "$LOG"
+	echo
+	echo "Enter: try again    p: power off    s: shell"
+	read -r answer
+	case "$answer" in
+		p|P) poweroff ;;
+		s|S) exec /bin/sh ;;
+		*) killall fujinet apple2-fujinet 2>/dev/null; umount "$DATA" 2>/dev/null; exec "$0" ;;
+	esac
+fi
+
+killall apple2-fujinet fujinet 2>/dev/null
+sync
+umount "$DATA" 2>/dev/null
+poweroff

@@ -1,0 +1,81 @@
+#!/bin/sh
+# Bring up the network for FujiNet: load drivers for what is plugged in,
+# then DHCP on wired cards and, with APPLE2/wifi.txt filled in, on Wi-Fi.
+# Runs in the background; the Apple does not wait for it.
+
+DATA=/media/apple2
+LOG=/run/net.log
+exec >"$LOG" 2>&1
+
+# Drivers for every device present (Wi-Fi drivers are modules).
+for f in /sys/bus/pci/devices/*/modalias /sys/bus/usb/devices/*/modalias; do
+	[ -r "$f" ] && modprobe -q "$(cat "$f")" 2>/dev/null
+done
+sleep 2
+
+ifaces() {
+	for d in /sys/class/net/*; do
+		n=${d##*/}
+		[ "$n" = lo ] && continue
+		echo "$n"
+	done
+}
+
+is_wireless() { [ -d "/sys/class/net/$1/wireless" ] || [ -d "/sys/class/net/$1/phy80211" ]; }
+
+# Wi-Fi settings: APPLE2/wifi.txt (SSID= / PASSWORD=), or a complete
+# APPLE2/wpa_supplicant.conf for anything unusual.
+WPA=/run/wpa_supplicant.conf
+make_wpa_conf() {
+	if [ -f "$DATA/wpa_supplicant.conf" ]; then
+		tr -d '\r' < "$DATA/wpa_supplicant.conf" > "$WPA"
+		return 0
+	fi
+	[ -f "$DATA/wifi.txt" ] || return 1
+	ssid=$(tr -d '\r' < "$DATA/wifi.txt" | sed -n 's/^[[:space:]]*SSID[[:space:]]*=[[:space:]]*//p' | head -n 1)
+	pass=$(tr -d '\r' < "$DATA/wifi.txt" | sed -n 's/^[[:space:]]*PASSWORD[[:space:]]*=[[:space:]]*//p' | head -n 1)
+	country=$(tr -d '\r' < "$DATA/wifi.txt" | sed -n 's/^[[:space:]]*COUNTRY[[:space:]]*=[[:space:]]*//p' | head -n 1)
+	[ -n "$ssid" ] || return 1
+	{
+		echo "ctrl_interface=/run/wpa_supplicant"
+		echo "country=${country:-KR}"
+		echo "network={"
+		echo "	ssid=\"$ssid\""
+		echo "	scan_ssid=1"
+		if [ -n "$pass" ]; then
+			echo "	psk=\"$pass\""
+			echo "	key_mgmt=WPA-PSK WPA-PSK-SHA256 SAE"
+			echo "	ieee80211w=1"
+		else
+			echo "	key_mgmt=NONE"
+		fi
+		echo "}"
+	} > "$WPA"
+	return 0
+}
+
+started=""
+for i in 1 2 3 4 5; do
+	for n in $(ifaces); do
+		case " $started " in *" $n "*) continue ;; esac
+		if is_wireless "$n"; then
+			make_wpa_conf || continue
+			ip link set "$n" up
+			wpa_supplicant -B -i "$n" -c "$WPA" -D nl80211,wext -P "/run/wpa-$n.pid"
+		else
+			ip link set "$n" up
+		fi
+		udhcpc -i "$n" -b -t 10 -T 3 -A 10 -S -s /usr/bin/apple2-dhcp -p "/run/udhcpc-$n.pid"
+		started="$started $n"
+	done
+	sleep 3
+done
+
+# Set the clock from the network once there is one.
+for i in $(seq 1 60); do
+	if [ -f /run/net-up ]; then
+		ntpd -n -q -p pool.ntp.org -p time.google.com && hwclock -w -l 2>/dev/null
+		break
+	fi
+	sleep 2
+done

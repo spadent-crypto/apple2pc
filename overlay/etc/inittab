@@ -1,0 +1,19 @@
+# Apple II PC: no login, no getty. tty1 runs the emulator.
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -t sysfs sysfs /sys
+::sysinit:/bin/mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+::sysinit:/bin/mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+::sysinit:/bin/mkdir -p /dev/pts /dev/shm
+::sysinit:/bin/mount -t devpts devpts /dev/pts
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/sbin/ip link set lo up
+
+# The emulator. When it ends (F12) the machine powers off.
+tty1::once:/usr/bin/apple2-session
+
+# Rescue shell: Ctrl+Alt+F2 (Alt+F1 goes back).
+tty2::askfirst:-/bin/sh
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/sync
+::shutdown:/bin/umount -a -r

@@ -1,0 +1,2534 @@
+From 496812eaba917e4113b7a7b3940a101f0e165525 Mon Sep 17 00:00:00 2001
+From: James <james@localhost>
+Date: Tue, 20 Oct 2026 07:18:21 +0900
+Subject: [PATCH 3/4] SmartPort and FujiNet cards; full-screen fixes; safer
+ slot saves
+
+New cards, sharing one firmware and one 6502-facing core
+(src/apple2/peripherals/smartport):
+
+- SmartPort: a SmartPort controller with two hard disks and two UniDisk
+  3.5 drives, from ProDOS-order images (.po .hdv .2mg, MacBinary, inside
+  .zip/.gz read-only). Drives 1-2 answer the hard disk commands, so the
+  hard disk keys (Shift+F3/F4) and Harddisk Image keys serve it; F3/F4
+  put a 400K/800K image in the 3.5 drive of that number, and the 3.5
+  drives keep their images under 'SmartPort 3.5 Image 1/2'.
+- FujiNet: the units of a FujiNet-PC (Apple build) over TCP with the
+  FujiNet project's SmartPort-over-SLIP protocol, as AppleWin's
+  SmartPortOverSlip card does. Section [FujiNet]: Listen Address, Port
+  (1985), Response Timeout, Boot Wait.
+
+The firmware moves every reply into memory with 6502 stores, so the card
+never writes behind the bank switching, and needs no CPU registers.
+
+Also:
+- read 'Screen Width'/'Screen Height' from linapple.conf;
+- hide the pointer and treat the window as full screen when started so;
+- sync() after a save slot is written or erased.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WsL4gZNfD2isH3GzbRC1Jq
+---
+ CMakeLists.txt                                |   1 +
+ .../peripherals/smartport/FujiNetLink.cpp     | 420 ++++++++++
+ .../peripherals/smartport/FujiNetLink.h       |  84 ++
+ .../peripherals/smartport/LocalDisks.cpp      | 366 +++++++++
+ src/apple2/peripherals/smartport/LocalDisks.h |  81 ++
+ .../peripherals/smartport/SmartPortCard.cpp   | 764 ++++++++++++++++++
+ .../peripherals/smartport/SmartPortCard.h     |  15 +
+ .../peripherals/smartport/SmartPortRom.h      | 135 ++++
+ .../peripherals/smartport/SmartPortTypes.h    |  71 ++
+ .../peripherals/smartport/firmware/gen_rom.sh |  28 +
+ .../smartport/firmware/smartport.s            | 183 +++++
+ src/frontends/common/AppController.cpp        |  19 +-
+ src/frontends/common/HarddiskFrontend.cpp     |   8 +-
+ src/frontends/common/sdl/DiskChoose_Decl.h    |   2 +
+ src/frontends/common/sdl/DiskSelect.cpp       |  82 +-
+ src/frontends/sdl1/Frame.cpp                  |   7 +
+ src/frontends/sdl1/Frame.h                    |   1 +
+ src/frontends/sdl1/SnapshotGallery.cpp        |   3 +
+ 18 files changed, 2261 insertions(+), 9 deletions(-)
+ create mode 100644 src/apple2/peripherals/smartport/FujiNetLink.cpp
+ create mode 100644 src/apple2/peripherals/smartport/FujiNetLink.h
+ create mode 100644 src/apple2/peripherals/smartport/LocalDisks.cpp
+ create mode 100644 src/apple2/peripherals/smartport/LocalDisks.h
+ create mode 100644 src/apple2/peripherals/smartport/SmartPortCard.cpp
+ create mode 100644 src/apple2/peripherals/smartport/SmartPortCard.h
+ create mode 100644 src/apple2/peripherals/smartport/SmartPortRom.h
+ create mode 100644 src/apple2/peripherals/smartport/SmartPortTypes.h
+ create mode 100755 src/apple2/peripherals/smartport/firmware/gen_rom.sh
+ create mode 100644 src/apple2/peripherals/smartport/firmware/smartport.s
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b14dea6..5cc3579 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -668,6 +668,7 @@ add_peripheral(super_serial "Super Serial Card" "src/apple2/peripherals/super_se
+ add_peripheral(joystick "game I/O port (paddles, buttons and the //e Apple-key switch inputs)" "src/apple2/peripherals/joystick/Joystick.cpp" "" "" TRUE)
+ add_peripheral(printer "Parallel Printer" "src/apple2/peripherals/printer/Printer.cpp" "" "" FALSE)
+ add_peripheral(clock "Clock Card" "src/apple2/peripherals/clock/ClockCard.cpp" "" "" FALSE)
++add_peripheral(smartport "SmartPort and FujiNet cards" "src/apple2/peripherals/smartport/SmartPortCard.cpp;src/apple2/peripherals/smartport/LocalDisks.cpp;src/apple2/peripherals/smartport/FujiNetLink.cpp" "Threads::Threads" "image-container" FALSE)
+ finalize_peripheral_libraries()
+ 
+ # The chips have no target of their own: the core list and the Mockingboard
+diff --git a/src/apple2/peripherals/smartport/FujiNetLink.cpp b/src/apple2/peripherals/smartport/FujiNetLink.cpp
+new file mode 100644
+index 0000000..315d7cf
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/FujiNetLink.cpp
+@@ -0,0 +1,420 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include "apple2/peripherals/smartport/FujiNetLink.h"
++
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <netinet/tcp.h>
++#include <sys/select.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <cerrno>
++#include <cstring>
++
++namespace fujinet {
++
++namespace {
++
++constexpr uint8_t slip_end = 0xC0;
++constexpr uint8_t slip_esc = 0xDB;
++constexpr uint8_t slip_esc_end = 0xDC;
++constexpr uint8_t slip_esc_esc = 0xDD;
++
++constexpr size_t header_size = 11;
++constexpr size_t param_offset = 6;
++constexpr size_t max_params = header_size - param_offset;
++constexpr uint8_t max_units = 254;
++
++auto slip_encode(const std::vector<uint8_t>& data) -> std::vector<uint8_t> {
++  std::vector<uint8_t> out;
++  out.reserve(data.size() + 8);
++  out.push_back(slip_end);
++  for (uint8_t b : data) {
++    if (b == slip_end) {
++      out.push_back(slip_esc);
++      out.push_back(slip_esc_end);
++    } else if (b == slip_esc) {
++      out.push_back(slip_esc);
++      out.push_back(slip_esc_esc);
++    } else {
++      out.push_back(b);
++    }
++  }
++  out.push_back(slip_end);
++  return out;
++}
++
++}  // namespace
++
++// One TCP connection from a FujiNet-PC. A reader thread decodes the SLIP
++// stream and files each reply under its sequence number.
++class Connection {
++ public:
++  explicit Connection(int socket) : socket_(socket) {}
++  ~Connection() {
++    close();
++    if (reader_.joinable()) {
++      reader_.join();
++    }
++  }
++  Connection(const Connection&) = delete;
++  auto operator=(const Connection&) -> Connection& = delete;
++
++  template <typename OnClose>
++  auto start(OnClose on_close) -> void {
++    reader_ = std::thread([this, on_close]() {
++      read_loop();
++      on_close(this);
++    });
++  }
++
++  auto alive() const -> bool { return alive_.load(); }
++
++  auto close() -> void {
++    alive_ = false;
++    std::lock_guard<std::mutex> lock(send_mutex_);
++    if (socket_ >= 0) {
++      shutdown(socket_, SHUT_RDWR);
++    }
++  }
++
++  auto finished() const -> bool { return finished_.load(); }
++
++  auto join() -> void {
++    if (reader_.joinable()) {
++      reader_.join();
++    }
++    std::lock_guard<std::mutex> lock(send_mutex_);
++    if (socket_ >= 0) {
++      ::close(socket_);
++      socket_ = -1;
++    }
++  }
++
++  auto send(const std::vector<uint8_t>& packet) -> bool {
++    const std::vector<uint8_t> frame = slip_encode(packet);
++    std::lock_guard<std::mutex> lock(send_mutex_);
++    size_t sent = 0;
++    while (sent < frame.size()) {
++      const ssize_t n = ::send(socket_, frame.data() + sent,
++                               frame.size() - sent, MSG_NOSIGNAL);
++      if (n <= 0) {
++        if (n < 0 && errno == EINTR) {
++          continue;
++        }
++        alive_ = false;
++        return false;
++      }
++      sent += static_cast<size_t>(n);
++    }
++    return true;
++  }
++
++  // The reply with this sequence number, or nothing after `timeout`.
++  auto wait(uint8_t sequence, std::chrono::milliseconds timeout,
++            std::vector<uint8_t>* reply) -> bool {
++    std::unique_lock<std::mutex> lock(replies_mutex_);
++    const bool got = replies_cv_.wait_for(lock, timeout, [&]() {
++      return replies_.count(sequence) != 0 || !alive_.load();
++    });
++    auto it = replies_.find(sequence);
++    if (!got || it == replies_.end()) {
++      return false;
++    }
++    *reply = std::move(it->second);
++    replies_.erase(it);
++    return true;
++  }
++
++  auto forget(uint8_t sequence) -> void {
++    std::lock_guard<std::mutex> lock(replies_mutex_);
++    replies_.erase(sequence);
++  }
++
++ private:
++  auto read_loop() -> void {
++    std::vector<uint8_t> frame;
++    bool in_frame = false;
++    bool escaped = false;
++    uint8_t buffer[2048];
++    while (alive_.load()) {
++      const ssize_t n = recv(socket_, buffer, sizeof(buffer), 0);
++      if (n < 0 && errno == EINTR) {
++        continue;
++      }
++      if (n <= 0) {
++        break;
++      }
++      for (ssize_t i = 0; i < n; ++i) {
++        const uint8_t b = buffer[i];
++        if (b == slip_end) {
++          if (in_frame && !frame.empty()) {
++            deliver(frame);
++          }
++          frame.clear();
++          in_frame = true;
++          escaped = false;
++          continue;
++        }
++        if (!in_frame) {
++          continue;
++        }
++        if (escaped) {
++          escaped = false;
++          if (b == slip_esc_end) {
++            frame.push_back(slip_end);
++          } else if (b == slip_esc_esc) {
++            frame.push_back(slip_esc);
++          } else {
++            in_frame = false;  // bad escape: drop the frame
++            frame.clear();
++          }
++        } else if (b == slip_esc) {
++          escaped = true;
++        } else {
++          frame.push_back(b);
++        }
++      }
++    }
++    alive_ = false;
++    finished_ = true;
++    replies_cv_.notify_all();
++  }
++
++  auto deliver(const std::vector<uint8_t>& frame) -> void {
++    {
++      std::lock_guard<std::mutex> lock(replies_mutex_);
++      replies_[frame[0]] = frame;
++    }
++    replies_cv_.notify_all();
++  }
++
++  int socket_;
++  std::atomic<bool> alive_{true};
++  std::atomic<bool> finished_{false};
++  std::thread reader_;
++  std::mutex send_mutex_;
++  std::mutex replies_mutex_;
++  std::condition_variable replies_cv_;
++  std::map<uint8_t, std::vector<uint8_t>> replies_;
++};
++
++Link::~Link() { stop(); }
++
++auto Link::start(const std::string& address, uint16_t port,
++                 std::chrono::seconds timeout, std::string* error) -> bool {
++  stop();
++  timeout_ = timeout;
++
++  const int fd = socket(AF_INET, SOCK_STREAM, 0);
++  if (fd < 0) {
++    *error = std::string("socket: ") + std::strerror(errno);
++    return false;
++  }
++  const int yes = 1;
++  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
++
++  sockaddr_in addr{};
++  addr.sin_family = AF_INET;
++  addr.sin_port = htons(port);
++  if (inet_pton(AF_INET, address.c_str(), &addr.sin_addr) != 1) {
++    *error = "not an IPv4 address: " + address;
++    ::close(fd);
++    return false;
++  }
++  if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
++      listen(fd, 4) != 0) {
++    *error = address + ":" + std::to_string(port) + ": " +
++             std::strerror(errno);
++    ::close(fd);
++    return false;
++  }
++
++  server_ = fd;
++  running_ = true;
++  listener_ = std::thread([this]() { listen_loop(); });
++  return true;
++}
++
++auto Link::stop() -> void {
++  if (!running_.exchange(false)) {
++    return;
++  }
++  if (listener_.joinable()) {
++    listener_.join();
++  }
++  if (server_ >= 0) {
++    ::close(server_);
++    server_ = -1;
++  }
++  std::vector<std::shared_ptr<Connection>> connections;
++  {
++    std::lock_guard<std::mutex> lock(units_mutex_);
++    connections.swap(connections_);
++    units_.clear();
++  }
++  for (auto& c : connections) {
++    c->close();
++  }
++  for (auto& c : connections) {
++    c->join();
++  }
++  ++generation_;
++  units_changed_.notify_all();
++}
++
++auto Link::listen_loop() -> void {
++  while (running_.load()) {
++    fd_set set;
++    FD_ZERO(&set);
++    FD_SET(server_, &set);
++    timeval tv{};
++    tv.tv_usec = 200000;
++    const int ready = select(server_ + 1, &set, nullptr, nullptr, &tv);
++    if (ready < 0 && errno != EINTR) {
++      break;
++    }
++    if (ready <= 0) {
++      continue;
++    }
++    const int client = accept(server_, nullptr, nullptr);
++    if (client >= 0) {
++      adopt(client);
++    }
++  }
++}
++
++// A FujiNet-PC connected: count its units with INIT 1, 2, ... until one
++// answers END OF CHAIN. The connection serves the Apple only once counted.
++auto Link::adopt(int socket) -> void {
++  const int yes = 1;
++  setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
++
++  auto connection = std::make_shared<Connection>(socket);
++  connection->start([this](const Connection* c) { drop(c); });
++
++  // Reap connections whose reader has ended.
++  {
++    std::vector<std::shared_ptr<Connection>> finished;
++    {
++      std::lock_guard<std::mutex> lock(units_mutex_);
++      auto it = std::stable_partition(
++          connections_.begin(), connections_.end(),
++          [](const std::shared_ptr<Connection>& c) { return !c->finished(); });
++      finished.assign(it, connections_.end());
++      connections_.erase(it, connections_.end());
++    }
++    for (auto& c : finished) {
++      c->join();
++    }
++  }
++
++  std::vector<uint8_t> device_ids;
++  for (uint8_t id = 1; id <= max_units && connection->alive(); ++id) {
++    const uint8_t seq = sequence_++;
++    std::vector<uint8_t> packet(header_size, 0);
++    packet[0] = seq;
++    packet[1] = smartport::cmd_init;
++    packet[2] = 1;
++    packet[3] = id;
++    if (!connection->send(packet)) {
++      break;
++    }
++    std::vector<uint8_t> reply;
++    if (!connection->wait(seq, std::chrono::seconds(10), &reply) ||
++        reply.size() < 2) {
++      connection->forget(seq);
++      break;
++    }
++    // As on a real SmartPort chain every unit answers INIT, and the last
++    // one answers with END OF CHAIN (non-zero) instead of no error.
++    device_ids.push_back(id);
++    if (reply[1] != 0) {
++      break;
++    }
++  }
++
++  std::lock_guard<std::mutex> lock(units_mutex_);
++  connections_.push_back(connection);
++  if (!connection->alive()) {
++    return;
++  }
++  for (uint8_t id : device_ids) {
++    if (units_.size() >= max_units) {
++      break;
++    }
++    Unit unit;
++    unit.connection = connection;
++    unit.device_id = id;
++    units_.push_back(unit);
++  }
++  ++generation_;
++  units_changed_.notify_all();
++}
++
++auto Link::drop(const Connection* connection) -> void {
++  std::lock_guard<std::mutex> lock(units_mutex_);
++  const auto before = units_.size();
++  units_.erase(std::remove_if(units_.begin(), units_.end(),
++                              [connection](const Unit& u) {
++                                return u.connection.get() == connection;
++                              }),
++               units_.end());
++  if (units_.size() != before) {
++    ++generation_;
++    units_changed_.notify_all();
++  }
++}
++
++auto Link::unit_count() -> uint8_t {
++  std::lock_guard<std::mutex> lock(units_mutex_);
++  return static_cast<uint8_t>(units_.size());
++}
++
++auto Link::wait_until_ready(std::chrono::milliseconds wait) -> void {
++  std::unique_lock<std::mutex> lock(units_mutex_);
++  units_changed_.wait_for(lock, wait, [this]() { return !units_.empty(); });
++}
++
++auto Link::request(uint8_t unit, uint8_t command, uint8_t param_count,
++                   const std::vector<uint8_t>& params,
++                   const std::vector<uint8_t>& payload) -> Reply {
++  Reply result;
++  std::shared_ptr<Connection> connection;
++  uint8_t device_id = 0;
++  {
++    std::lock_guard<std::mutex> lock(units_mutex_);
++    if (unit == 0 || unit > units_.size()) {
++      return result;
++    }
++    connection = units_[unit - 1].connection;
++    device_id = units_[unit - 1].device_id;
++  }
++
++  const uint8_t seq = sequence_++;
++  std::vector<uint8_t> packet(header_size, 0);
++  packet[0] = seq;
++  packet[1] = command;
++  packet[2] = param_count;
++  packet[3] = device_id;
++  for (size_t i = 0; i < params.size() && i < max_params; ++i) {
++    packet[param_offset + i] = params[i];
++  }
++  packet.insert(packet.end(), payload.begin(), payload.end());
++
++  if (!connection->send(packet)) {
++    return result;
++  }
++  std::vector<uint8_t> reply;
++  if (!connection->wait(seq, timeout_, &reply) || reply.size() < 2) {
++    connection->forget(seq);
++    return result;
++  }
++  result.ok = true;
++  result.status = reply[1];
++  result.data.assign(reply.begin() + 2, reply.end());
++  return result;
++}
++
++}  // namespace fujinet
+diff --git a/src/apple2/peripherals/smartport/FujiNetLink.h b/src/apple2/peripherals/smartport/FujiNetLink.h
+new file mode 100644
+index 0000000..86c977f
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/FujiNetLink.h
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// The link between the FujiNet card and FujiNet-PC (the FujiNet firmware's
++// PC build for the Apple II), speaking the SmartPort-over-SLIP protocol of
++// the FujiNet project's devrelay library:
++//
++//   * the card listens on TCP; FujiNet-PC connects to it ([BOIP] host/port
++//     in fnconfig.ini, port 1985 by default);
++//   * every frame is SLIP encoded (END $C0, ESC $DB);
++//   * a request is an 11-byte header, sequence, command, parameter count,
++//     device id, 2 zero bytes, 5 parameter bytes, then any payload;
++//   * a reply is sequence, status, then any data.
++//
++// On connect the card sends INIT to device 1, 2, ... until a unit answers
++// END OF CHAIN, which tells it how many SmartPort units the FujiNet offers.
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "apple2/peripherals/smartport/SmartPortTypes.h"
++
++namespace fujinet {
++
++using smartport::Reply;
++
++class Connection;
++
++class Link : public smartport::Backend {
++ public:
++  Link() = default;
++  ~Link() override;
++
++  // Starts listening; false (with the reason in error) when the port cannot
++  // be opened.
++  auto start(const std::string& address, uint16_t port,
++             std::chrono::seconds timeout, std::string* error) -> bool;
++  auto stop() -> void;
++
++  // SmartPort units on offer, numbered 1..count for the Apple.
++  auto unit_count() -> uint8_t override;
++  // Waits up to `wait` for at least one unit.
++  auto wait_until_ready(std::chrono::milliseconds wait) -> void override;
++
++  // Sends a request to the Apple's unit (1-based) and waits for the reply.
++  // params holds up to 5 bytes, placed after the 6-byte header.
++  auto request(uint8_t unit, uint8_t command, uint8_t param_count,
++               const std::vector<uint8_t>& params,
++               const std::vector<uint8_t>& payload) -> Reply override;
++
++  // Bumped whenever the set of units changes, so callers can drop caches.
++  auto generation() const -> uint32_t override { return generation_.load(); }
++
++ private:
++  struct Unit {
++    std::shared_ptr<Connection> connection;
++    uint8_t device_id = 0;  // the id FujiNet-PC knows the unit by
++  };
++
++  auto listen_loop() -> void;
++  auto adopt(int socket) -> void;
++  auto drop(const Connection* connection) -> void;
++
++  std::atomic<bool> running_{false};
++  std::thread listener_;
++  int server_ = -1;
++  std::chrono::seconds timeout_{5};
++
++  std::mutex units_mutex_;
++  std::condition_variable units_changed_;
++  std::vector<Unit> units_;
++  std::vector<std::shared_ptr<Connection>> connections_;
++  std::atomic<uint32_t> generation_{0};
++  std::atomic<uint8_t> sequence_{0};
++};
++
++}  // namespace fujinet
+diff --git a/src/apple2/peripherals/smartport/LocalDisks.cpp b/src/apple2/peripherals/smartport/LocalDisks.cpp
+new file mode 100644
+index 0000000..5e9e853
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/LocalDisks.cpp
+@@ -0,0 +1,366 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include "apple2/peripherals/smartport/LocalDisks.h"
++
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <cctype>
++#include <cstring>
++
++#include "apple2/media/image_container/ImageContainer.h"
++#include "apple2/peripherals/harddisk/HarddiskError.h"
++
++namespace smartport {
++
++namespace {
++
++constexpr size_t block_size = 512;
++constexpr uint32_t max_blocks = 65535;            // ProDOS: 32 MB
++constexpr size_t decompress_limit = 64U << 20;    // 64 MB uncompressed
++constexpr uint32_t blocks_400k = 800;
++constexpr uint32_t blocks_800k = 1600;
++constexpr size_t dib_name_len = 16;
++
++auto first_drive_index() -> int { return 2; }  // units 3 and 4: 3.5"
++
++auto is_35(int index) -> bool { return index >= first_drive_index(); }
++
++auto read_u16(const uint8_t* p) -> uint32_t { return p[0] | (p[1] << 8); }
++
++auto read_u32(const uint8_t* p) -> uint32_t {
++  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
++         (static_cast<uint32_t>(p[2]) << 16) |
++         (static_cast<uint32_t>(p[3]) << 24);
++}
++
++auto base_name(const std::string& path) -> std::string {
++  const auto slash = path.find_last_of('/');
++  return slash == std::string::npos ? path : path.substr(slash + 1);
++}
++
++auto lower(std::string s) -> std::string {
++  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
++    return static_cast<char>(std::tolower(c));
++  });
++  return s;
++}
++
++}  // namespace
++
++LocalDisks::~LocalDisks() {
++  for (auto& unit : units_) {
++    close_unit(unit);
++  }
++}
++
++auto LocalDisks::close_unit(Unit& unit) -> void {
++  if (unit.fd >= 0) {
++    if (unit.dirty) {
++      fsync(unit.fd);
++    }
++    close(unit.fd);
++  }
++  if (unit.temporary && !unit.load_path.empty()) {
++    unlink(unit.load_path.c_str());
++  }
++  const int last_error = unit.last_error;
++  unit = Unit{};
++  unit.last_error = last_error;
++}
++
++auto LocalDisks::insert(int index, const std::string& path,
++                        bool write_protected) -> int {
++  if (index < 0 || index >= local_unit_count) {
++    return harddisk_err_io;
++  }
++  Unit& unit = units_[static_cast<size_t>(index)];
++  close_unit(unit);
++  ++generation_;
++
++  char load_path[1024] = {};
++  bool temporary = false;
++  if (image_container_prepare_compressed_path(path.c_str(), load_path,
++                                              sizeof(load_path),
++                                              decompress_limit,
++                                              &temporary) !=
++      image_container_ok) {
++    unit.last_error = harddisk_err_not_found;
++    return unit.last_error;
++  }
++
++  bool protect = write_protected || temporary;
++  int fd = protect ? -1 : open(load_path, O_RDWR);
++  if (fd < 0) {
++    fd = open(load_path, O_RDONLY);
++    protect = true;
++  }
++  if (fd < 0) {
++    if (temporary) {
++      unlink(load_path);
++    }
++    unit.last_error = harddisk_err_not_found;
++    return unit.last_error;
++  }
++
++  struct stat st {};
++  fstat(fd, &st);
++  uint64_t size = static_cast<uint64_t>(st.st_size);
++  uint64_t offset = 0;
++
++  uint8_t header[128] = {};
++  const ssize_t got = pread(fd, header, sizeof(header), 0);
++
++  int error = harddisk_err_none;
++  if (got >= 64 && std::memcmp(header, "2IMG", 4) == 0) {
++    const uint32_t format = read_u32(header + 12);
++    const uint32_t flags = read_u32(header + 16);
++    const uint32_t data_offset = read_u32(header + 24);
++    const uint32_t data_length = read_u32(header + 28);
++    if (format != 1 || data_offset < read_u16(header + 8) ||
++        static_cast<uint64_t>(data_offset) + data_length > size) {
++      error = format == 2 ? harddisk_err_not_block_image
++                          : harddisk_err_invalid_format;
++    } else {
++      offset = data_offset;
++      size = data_length;
++      if ((flags & 0x80000000U) != 0) {
++        protect = true;
++      }
++    }
++  } else if (got == static_cast<ssize_t>(sizeof(header))) {
++    const uint32_t wrapped = image_container_detect_macbinary(
++        header, sizeof(header),
++        static_cast<uint32_t>(std::min<uint64_t>(size, 0xFFFFFFFFULL)));
++    if (wrapped != 0) {
++      offset = image_container_macbinary_header_len;
++      size = wrapped;
++    }
++  }
++
++  const std::string ext = lower(path.substr(path.find_last_of('.') + 1));
++  if (error == harddisk_err_none &&
++      (ext == "nib" || ext == "woz" || ext == "nb2")) {
++    error = harddisk_err_not_block_image;
++  }
++  if (error == harddisk_err_none &&
++      (size == 0 || size % block_size != 0 ||
++       size / block_size > max_blocks)) {
++    error = harddisk_err_invalid_format;
++  }
++  if (error != harddisk_err_none) {
++    close(fd);
++    if (temporary) {
++      unlink(load_path);
++    }
++    unit.last_error = error;
++    return error;
++  }
++
++  unit.fd = fd;
++  unit.write_protected = protect;
++  unit.temporary = temporary;
++  unit.offset = offset;
++  unit.blocks = static_cast<uint32_t>(size / block_size);
++  unit.path = path;
++  unit.load_path = load_path;
++  unit.name = base_name(path);
++  unit.switched = true;
++  unit.last_error = harddisk_err_none;
++  return harddisk_err_none;
++}
++
++auto LocalDisks::eject(int index) -> void {
++  if (index < 0 || index >= local_unit_count) {
++    return;
++  }
++  close_unit(units_[static_cast<size_t>(index)]);
++  units_[static_cast<size_t>(index)].switched = true;
++  ++generation_;
++}
++
++auto LocalDisks::set_protect(int index, bool write_protected) -> void {
++  if (index < 0 || index >= local_unit_count) {
++    return;
++  }
++  Unit& unit = units_[static_cast<size_t>(index)];
++  if (unit.fd < 0) {
++    return;
++  }
++  if (!write_protected && !unit.temporary) {
++    const int fd = open(unit.load_path.c_str(), O_RDWR);
++    if (fd < 0) {
++      return;  // stays protected: the file is read-only
++    }
++    close(unit.fd);
++    unit.fd = fd;
++  }
++  unit.write_protected = write_protected || unit.temporary;
++}
++
++auto LocalDisks::info(int index) const -> LocalUnitInfo {
++  LocalUnitInfo out;
++  if (index < 0 || index >= local_unit_count) {
++    return out;
++  }
++  const Unit& unit = units_[static_cast<size_t>(index)];
++  out.loaded = unit.fd >= 0;
++  out.write_protected = unit.write_protected;
++  out.path = unit.path;
++  out.name = unit.name;
++  out.last_error = unit.last_error;
++  return out;
++}
++
++auto LocalDisks::flush() -> void {
++  for (auto& unit : units_) {
++    if (unit.fd >= 0 && unit.dirty) {
++      fdatasync(unit.fd);
++      unit.dirty = false;
++    }
++  }
++  last_sync_ = std::chrono::steady_clock::now();
++}
++
++// Bit 7 block device, 6 write allowed, 5 read allowed, 4 online,
++// 3 format allowed, 2 write protected, 0 disk switched.
++auto LocalDisks::status_byte(int index) const -> uint8_t {
++  const Unit& unit = units_[static_cast<size_t>(index)];
++  uint8_t s = 0x80 | 0x20 | 0x08;
++  if (unit.fd >= 0) {
++    s |= 0x10;
++    s |= unit.write_protected ? 0x04 : 0x40;
++  } else if (!is_35(index)) {
++    s |= 0x40;
++  }
++  if (unit.switched && is_35(index)) {
++    s |= 0x01;
++  }
++  return s;
++}
++
++auto LocalDisks::dib(int index) const -> std::vector<uint8_t> {
++  const Unit& unit = units_[static_cast<size_t>(index)];
++  std::vector<uint8_t> d;
++  d.push_back(status_byte(index));
++  d.push_back(static_cast<uint8_t>(unit.blocks & 0xFF));
++  d.push_back(static_cast<uint8_t>((unit.blocks >> 8) & 0xFF));
++  d.push_back(static_cast<uint8_t>((unit.blocks >> 16) & 0xFF));
++  const char* name = is_35(index) ? "UNIDISK 3.5" : "SMARTPORT HD";
++  const size_t len = std::strlen(name);
++  d.push_back(static_cast<uint8_t>(len));
++  for (size_t i = 0; i < dib_name_len; ++i) {
++    d.push_back(static_cast<uint8_t>(i < len ? name[i] : ' '));
++  }
++  d.push_back(is_35(index) ? 0x01 : 0x02);  // type: 3.5" disk / hard disk
++  d.push_back(is_35(index) ? 0x00 : 0x20);  // subtype: removable / fixed
++  d.push_back(0x00);                        // firmware version $0100
++  d.push_back(0x01);
++  return d;
++}
++
++auto LocalDisks::request(uint8_t unit_number, uint8_t command,
++                         uint8_t param_count,
++                         const std::vector<uint8_t>& params,
++                         const std::vector<uint8_t>& payload) -> Reply {
++  (void)param_count;
++  Reply reply;
++  reply.ok = true;
++  if (unit_number == 0 || unit_number > local_unit_count) {
++    reply.status = err_bad_unit;
++    return reply;
++  }
++  const int index = unit_number - 1;
++  Unit& unit = units_[static_cast<size_t>(index)];
++  auto param = [&](size_t i) -> uint32_t {
++    return i < params.size() ? params[i] : 0;
++  };
++  const uint32_t block = param(0) | (param(1) << 8) | (param(2) << 16);
++
++  switch (command) {
++    case cmd_status:
++      switch (param(0)) {
++        case 0:
++          reply.data = dib(index);
++          reply.data.resize(4);
++          unit.switched = false;
++          return reply;
++        case 3:
++          reply.data = dib(index);
++          unit.switched = false;
++          return reply;
++        default:
++          reply.status = err_bad_status_code;
++          return reply;
++      }
++    case cmd_read_block: {
++      if (unit.fd < 0) {
++        reply.status = err_offline;
++        return reply;
++      }
++      if (block >= unit.blocks) {
++        reply.status = err_bad_block;
++        return reply;
++      }
++      reply.data.resize(block_size);
++      const ssize_t n =
++          pread(unit.fd, reply.data.data(), block_size,
++                static_cast<off_t>(unit.offset + uint64_t{block} * block_size));
++      if (n != static_cast<ssize_t>(block_size)) {
++        reply.data.clear();
++        reply.status = err_io;
++        return reply;
++      }
++      activity_ |= 0x01;
++      return reply;
++    }
++    case cmd_write_block: {
++      if (unit.fd < 0) {
++        reply.status = err_offline;
++        return reply;
++      }
++      if (unit.write_protected) {
++        reply.status = err_write_protected;
++        return reply;
++      }
++      if (block >= unit.blocks || payload.size() < block_size) {
++        reply.status = err_bad_block;
++        return reply;
++      }
++      const ssize_t n =
++          pwrite(unit.fd, payload.data(), block_size,
++                 static_cast<off_t>(unit.offset + uint64_t{block} * block_size));
++      if (n != static_cast<ssize_t>(block_size)) {
++        reply.status = err_io;
++        return reply;
++      }
++      unit.dirty = true;
++      activity_ |= 0x02;
++      // A machine like this one is often just switched off: write through
++      // to the disk at most a second after the last write.
++      const auto now = std::chrono::steady_clock::now();
++      if (now - last_sync_ > std::chrono::seconds(1)) {
++        flush();
++      }
++      return reply;
++    }
++    case cmd_format:
++      if (unit.fd < 0) {
++        reply.status = err_offline;
++      } else if (unit.write_protected) {
++        reply.status = err_write_protected;
++      }
++      return reply;
++    case cmd_control:
++      reply.status = param(0) == 0 ? err_none : err_bad_control_code;
++      return reply;
++    case cmd_init:
++      return reply;
++    default:  // OPEN, CLOSE, READ, WRITE: character devices only
++      reply.status = err_bad_command;
++      return reply;
++  }
++}
++
++}  // namespace smartport
+diff --git a/src/apple2/peripherals/smartport/LocalDisks.h b/src/apple2/peripherals/smartport/LocalDisks.h
+new file mode 100644
+index 0000000..00b3865
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/LocalDisks.h
+@@ -0,0 +1,81 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Disk images on the host as SmartPort units: two hard disks and two 3.5"
++// drives, the way a SmartPort controller with a hard disk and a UniDisk 3.5
++// chained to it presents them.
++//
++//   unit 1, 2  hard disk  (DIB type $02, non-removable), any size to 32 MB
++//   unit 3, 4  3.5" drive (DIB type $01, removable, "UNIDISK 3.5"),
++//              400K or 800K ProDOS-order images
++//
++// Images: ProDOS-order block images (.po .hdv .img .raw and the like), 2MG
++// with ProDOS order, MacBinary-wrapped images, and any of these inside
++// .zip or .gz (which mount read-only).
++#pragma once
++
++#include <array>
++#include <chrono>
++#include <cstdint>
++#include <string>
++
++#include "apple2/peripherals/smartport/SmartPortTypes.h"
++
++namespace smartport {
++
++constexpr int local_unit_count = 4;
++
++struct LocalUnitInfo {
++  bool loaded = false;
++  bool write_protected = false;
++  std::string path;  // as given, for the configuration
++  std::string name;  // file name shown to the user
++  int last_error = 0;
++};
++
++class LocalDisks : public Backend {
++ public:
++  LocalDisks() = default;
++  ~LocalDisks() override;
++
++  auto unit_count() -> uint8_t override { return local_unit_count; }
++  auto generation() const -> uint32_t override { return generation_; }
++  auto request(uint8_t unit, uint8_t command, uint8_t param_count,
++               const std::vector<uint8_t>& params,
++               const std::vector<uint8_t>& payload) -> Reply override;
++
++  // index 0..3 = unit 1..4. Returns a harddisk_err_* code (0 = mounted).
++  auto insert(int index, const std::string& path, bool write_protected)
++      -> int;
++  auto eject(int index) -> void;
++  auto set_protect(int index, bool write_protected) -> void;
++  auto info(int index) const -> LocalUnitInfo;
++  // Set while a unit is read or written, for the drive lamps.
++  auto activity() const -> uint8_t { return activity_; }
++  auto clear_activity() -> void { activity_ = 0; }
++  auto flush() -> void;
++
++ private:
++  struct Unit {
++    int fd = -1;
++    bool write_protected = false;
++    bool switched = false;
++    bool temporary = false;
++    uint64_t offset = 0;   // where block 0 starts in the file
++    uint32_t blocks = 0;
++    std::string path;
++    std::string load_path;
++    std::string name;
++    int last_error = 0;
++    bool dirty = false;
++  };
++
++  auto close_unit(Unit& unit) -> void;
++  auto dib(int index) const -> std::vector<uint8_t>;
++  auto status_byte(int index) const -> uint8_t;
++
++  std::array<Unit, local_unit_count> units_{};
++  uint32_t generation_ = 0;
++  uint8_t activity_ = 0;
++  std::chrono::steady_clock::time_point last_sync_{};
++};
++
++}  // namespace smartport
+diff --git a/src/apple2/peripherals/smartport/SmartPortCard.cpp b/src/apple2/peripherals/smartport/SmartPortCard.cpp
+new file mode 100644
+index 0000000..bb5f325
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/SmartPortCard.cpp
+@@ -0,0 +1,764 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// SmartPort cards: a SmartPort and ProDOS block-device interface whose units
++// are either disk images on the host or the units of a FujiNet.
++//
++//   "SmartPort"  two hard disks and two UniDisk 3.5 drives from images
++//                (LocalDisks); drives 1-2 take the hard disk commands, so
++//                the frontend's hard disk keys and configuration serve it.
++//   "FujiNet"    the units of a FujiNet-PC (the FujiNet firmware built for
++//                the PC, Apple II target) over TCP with SmartPort-over-SLIP
++//                (FujiNetLink): FujiNet CONFIG, its disk slots, the network
++//                (N:) device and printer, as behind a real FujiNet.
++//
++// The FujiNet side follows the SmartPortOverSlip card of the FujiNet project's AppleWin
++// fork (Copyright (C) 2022 Andrea Odetti and the FujiNet contributors,
++// GPL-2.0-or-later). The firmware is new: it moves every reply into memory
++// with 6502 stores, so the card never writes the Apple's memory behind the
++// back of its bank switching, and the card needs no access to the CPU's
++// registers.
++#include "apple2/peripherals/smartport/SmartPortCard.h"
++
++#include <array>
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <new>
++#include <string>
++#include <vector>
++
++#include "apple2/peripherals/Peripheral.h"
++#include "apple2/peripherals/Peripheral_Types.h"
++#include "apple2/peripherals/harddisk/HarddiskCommands.h"
++#include "apple2/peripherals/harddisk/HarddiskError.h"
++#include "apple2/peripherals/smartport/FujiNetLink.h"
++#include "apple2/peripherals/smartport/LocalDisks.h"
++#include "apple2/peripherals/smartport/SmartPortRom.h"
++
++namespace {
++
++constexpr const char* config_section = "FujiNet";
++constexpr const char* default_address = "127.0.0.1";
++constexpr uint16_t default_port = 1985;
++constexpr int default_timeout_s = 5;
++constexpr int default_boot_wait_s = 15;
++
++constexpr uint8_t trigger_smartport = 0x65;
++constexpr uint8_t trigger_prodos = 0x66;
++
++// Registers, offset from $C080 + slot * 16.
++constexpr uint8_t reg_start = 0;
++constexpr uint8_t reg_stack = 1;
++constexpr uint8_t reg_a = 2;
++constexpr uint8_t reg_x = 3;
++constexpr uint8_t reg_y = 4;
++constexpr uint8_t reg_count_lo = 5;
++constexpr uint8_t reg_count_hi = 6;
++constexpr uint8_t reg_dest_lo = 7;
++constexpr uint8_t reg_dest_hi = 8;
++constexpr uint8_t reg_data = 9;
++
++using smartport::err_bad_command;
++using smartport::err_io;
++using smartport::err_none;
++constexpr uint8_t err_no_device = smartport::err_no_drive;
++
++constexpr size_t block_size = 512;
++constexpr size_t dib_type = 21;
++
++struct Card {
++  HostInterface* host = nullptr;
++  int slot = 0;
++  std::unique_ptr<smartport::Backend> backend;
++  smartport::LocalDisks* disks = nullptr;  // the SmartPort card's
++  fujinet::Link* link = nullptr;           // the FujiNet card's
++  std::chrono::milliseconds boot_wait{0};
++  bool waited = false;
++
++  // Results of the last call, read back by the firmware.
++  uint8_t stack = 0;
++  uint8_t a = 0;
++  uint8_t x = 0;
++  uint8_t y = 0;
++  uint16_t dest = 0;
++  std::vector<uint8_t> copy;
++  size_t copied = 0;
++
++  // ProDOS drives 1 and 2: SmartPort units that are disks, 0 = none.
++  std::array<uint8_t, 2> drives{};
++  uint32_t drives_generation = 0;
++  bool drives_known = false;
++};
++
++auto peek(const Card* card, uint16_t addr) -> uint8_t {
++  return *card->host->get_mem_ptr(addr);
++}
++
++auto peek16(const Card* card, uint16_t addr) -> uint16_t {
++  return static_cast<uint16_t>(peek(card, addr) |
++                               (peek(card, static_cast<uint16_t>(addr + 1))
++                                << 8));
++}
++
++auto read_block_of_memory(const Card* card, uint16_t addr, size_t n)
++    -> std::vector<uint8_t> {
++  std::vector<uint8_t> out(n);
++  for (size_t i = 0; i < n; ++i) {
++    out[i] = peek(card, static_cast<uint16_t>(addr + i));
++  }
++  return out;
++}
++
++auto result(Card* card, uint8_t a, uint8_t x = 0, uint8_t y = 0)
++    -> void {
++  card->a = a;
++  card->x = x;
++  card->y = y;
++}
++
++auto deliver(Card* card, uint16_t dest, std::vector<uint8_t> data)
++    -> void {
++  card->dest = dest;
++  card->copy = std::move(data);
++}
++
++// The first call waits for FujiNet-PC, which starts with the machine and
++// may connect a moment after the Apple begins its boot scan.
++auto ensure_connected(Card* card) -> void {
++  if (card->waited) {
++    return;
++  }
++  card->waited = true;
++  if (card->backend->unit_count() == 0 && card->boot_wait.count() > 0) {
++    card->backend->wait_until_ready(card->boot_wait);
++  }
++}
++
++auto reply_error(const smartport::Reply& reply) -> uint8_t {
++  return reply.ok ? reply.status : static_cast<uint8_t>(err_io);
++}
++
++// --- SmartPort --------------------------------------------------------------
++
++auto smartport_call(Card* card) -> void {
++  const uint16_t ret =
++      static_cast<uint16_t>(peek(card, 0x100 | ((card->stack + 1) & 0xFF)) |
++                            (peek(card, 0x100 | ((card->stack + 2) & 0xFF))
++                             << 8));
++  const uint8_t command = peek(card, static_cast<uint16_t>(ret + 1));
++  const uint16_t list = peek16(card, static_cast<uint16_t>(ret + 2));
++
++  if (command >= 0x40) {  // extended (4-byte address) calls
++    result(card, err_bad_command);
++    return;
++  }
++
++  const uint8_t param_count = peek(card, list);
++  const uint8_t unit = peek(card, static_cast<uint16_t>(list + 1));
++  const uint16_t buffer = peek16(card, static_cast<uint16_t>(list + 2));
++  const uint16_t params = static_cast<uint16_t>(list + 4);
++  auto param = [&](int i) {
++    return peek(card, static_cast<uint16_t>(params + i));
++  };
++
++  ensure_connected(card);
++
++  // STATUS of unit 0, code 0: the card itself.
++  if (command == smartport::cmd_status && unit == 0) {
++    if (param(0) != 0) {
++      result(card, 0x21);  // bad status code
++      return;
++    }
++    std::vector<uint8_t> info = {
++        card->backend->unit_count(),
++        0x40,        // no interrupt
++        0x4D, 0x46,  // vendor "MF", as FujiNet's own cards report
++        0x0A, 0x10,  // interface version 1.00 alpha
++        0x00, 0x00,
++    };
++    deliver(card, buffer, info);
++    result(card, err_none, static_cast<uint8_t>(info.size()), 0);
++    return;
++  }
++
++  if (unit == 0 || unit > card->backend->unit_count()) {
++    result(card, err_no_device);
++    return;
++  }
++
++  smartport::Reply reply;
++  switch (command) {
++    case smartport::cmd_status: {
++      const uint8_t code = param(0);
++      const uint8_t net_unit = param_count > 3 ? param(1) : 0;
++      reply = card->backend->request(unit, command, param_count, {code, net_unit},
++                                 {});
++      if (reply.ok && reply.status == 0) {
++        const size_t n = reply.data.size();
++        deliver(card, buffer, reply.data);
++        result(card, err_none, static_cast<uint8_t>(n & 0xFF),
++               static_cast<uint8_t>(n >> 8));
++        return;
++      }
++      break;
++    }
++    case smartport::cmd_read_block: {
++      reply = card->backend->request(unit, command, param_count,
++                                 {param(0), param(1), param(2)}, {});
++      if (reply.ok && reply.status == 0 &&
++          reply.data.size() >= block_size) {
++        reply.data.resize(block_size);
++        deliver(card, buffer, reply.data);
++        result(card, err_none, 0, 2);
++        return;
++      }
++      if (reply.ok && reply.status == 0) {
++        reply.ok = false;  // short block: report an I/O error
++      }
++      break;
++    }
++    case smartport::cmd_write_block:
++      reply = card->backend->request(unit, command, param_count,
++                                 {param(0), param(1), param(2)},
++                                 read_block_of_memory(card, buffer,
++                                                      block_size));
++      break;
++    case smartport::cmd_control: {
++      const uint8_t code = param(0);
++      const uint8_t net_unit = param_count > 3 ? param(1) : 0;
++      // The control list: a 2-byte length, then that many bytes.
++      const size_t length = peek16(card, buffer) + 2U;
++      reply = card->backend->request(unit, command, param_count, {code, net_unit},
++                                 read_block_of_memory(card, buffer, length));
++      break;
++    }
++    case smartport::cmd_read: {
++      const std::vector<uint8_t> count_and_address = {
++          param(0), param(1), param(2), param(3), param(4)};
++      reply = card->backend->request(unit, command, param_count,
++                                 count_and_address, {});
++      if (reply.ok && reply.status == 0) {
++        const size_t n = reply.data.size();
++        deliver(card, buffer, reply.data);
++        result(card, err_none, static_cast<uint8_t>(n & 0xFF),
++               static_cast<uint8_t>(n >> 8));
++        return;
++      }
++      break;
++    }
++    case smartport::cmd_write: {
++      const size_t count = static_cast<size_t>(param(0) | (param(1) << 8));
++      reply = card->backend->request(
++          unit, command, param_count,
++          {param(0), param(1), param(2), param(3), param(4)},
++          read_block_of_memory(card, buffer, count));
++      break;
++    }
++    case smartport::cmd_format:
++    case smartport::cmd_init:
++    case smartport::cmd_open:
++    case smartport::cmd_close:
++      reply = card->backend->request(unit, command, param_count, {}, {});
++      break;
++    default:
++      result(card, err_bad_command);
++      return;
++  }
++  result(card, reply_error(reply));
++}
++
++// --- ProDOS -----------------------------------------------------------------
++
++// Drives 1 and 2 are the first two SmartPort units that are disks, online,
++// as the AppleWin card picks them.
++auto find_drives(Card* card) -> void {
++  card->drives = {0, 0};
++  size_t found = 0;
++  const uint8_t count = card->backend->unit_count();
++  for (uint8_t unit = 1; unit <= count && found < 2; ++unit) {
++    const smartport::Reply dib =
++        card->backend->request(unit, smartport::cmd_status, 3, {3, 0}, {});
++    if (!dib.ok || dib.status != 0 || dib.data.size() <= dib_type) {
++      continue;
++    }
++    const uint8_t type = dib.data[dib_type];
++    const bool disk = type == 0x01 || type == 0x02 || type == 0x0A;
++    const bool online = (dib.data[0] & 0x10) != 0;
++    if (disk && online) {
++      card->drives[found++] = unit;
++    }
++  }
++  card->drives_generation = card->backend->generation();
++  card->drives_known = true;
++}
++
++auto prodos_call(Card* card) -> void {
++  const uint8_t command = peek(card, 0x42);
++  const uint8_t unit_byte = peek(card, 0x43);
++  const uint16_t buffer = peek16(card, 0x44);
++  const uint8_t block_lo = peek(card, 0x46);
++  const uint8_t block_hi = peek(card, 0x47);
++
++  if (((unit_byte >> 4) & 0x07) != card->slot) {
++    result(card, err_no_device);
++    return;
++  }
++  ensure_connected(card);
++
++  if (command == 0 || !card->drives_known ||
++      card->drives_generation != card->backend->generation()) {
++    find_drives(card);
++  }
++  const uint8_t unit = card->drives[(unit_byte & 0x80) != 0 ? 1 : 0];
++  if (unit == 0) {
++    result(card, err_io);  // no disk yet; ProDOS asks again later
++    return;
++  }
++
++  switch (command) {
++    case 0: {  // STATUS: blocks on the device in X/Y
++      const smartport::Reply reply =
++          card->backend->request(unit, smartport::cmd_status, 3, {0, 0}, {});
++      if (reply.ok && reply.status == 0 && reply.data.size() >= 3 &&
++          (reply.data[0] & 0x70) == 0x70) {
++        result(card, err_none, reply.data[1], reply.data[2]);
++      } else {
++        result(card, err_io);
++      }
++      return;
++    }
++    case 1: {  // READ
++      smartport::Reply reply = card->backend->request(
++          unit, smartport::cmd_read_block, 3, {block_lo, block_hi, 0}, {});
++      if (reply.ok && reply.status == 0 &&
++          reply.data.size() >= block_size) {
++        reply.data.resize(block_size);
++        deliver(card, buffer, reply.data);
++        result(card, err_none, 0, 2);
++      } else {
++        result(card, err_io);
++      }
++      return;
++    }
++    case 2: {  // WRITE
++      const smartport::Reply reply = card->backend->request(
++          unit, smartport::cmd_write_block, 3, {block_lo, block_hi, 0},
++          read_block_of_memory(card, buffer, block_size));
++      if (reply.ok && reply.status != 0) {
++        result(card, reply.status);
++      } else {
++        result(card, reply.ok ? err_none : err_io);
++      }
++      return;
++    }
++    case 3: {  // FORMAT
++      const smartport::Reply reply =
++          card->backend->request(unit, smartport::cmd_format, 1, {}, {});
++      result(card, reply.ok && reply.status == 0 ? err_none : err_io);
++      return;
++    }
++    default:
++      result(card, err_no_device);
++      return;
++  }
++}
++
++// --- I/O --------------------------------------------------------------------
++
++auto smartport_io_write(void* instance, uint16_t pc, uint16_t addr,
++                      uint8_t is_write, uint8_t value, uint32_t cycles)
++    -> uint8_t {
++  (void)pc;
++  (void)is_write;
++  (void)cycles;
++  auto* card = static_cast<Card*>(instance);
++  if (card == nullptr) {
++    return 0;
++  }
++  switch (addr & 0x0F) {
++    case reg_stack:
++      card->stack = value;
++      break;
++    case reg_start:
++      card->copy.clear();
++      card->copied = 0;
++      card->dest = 0;
++      result(card, err_io);
++      if (value == trigger_smartport) {
++        smartport_call(card);
++      } else if (value == trigger_prodos) {
++        prodos_call(card);
++      }
++      break;
++    default:
++      break;
++  }
++  return 0;
++}
++
++auto smartport_io_read(void* instance, uint16_t pc, uint16_t addr,
++                     uint8_t is_write, uint8_t value, uint32_t cycles)
++    -> uint8_t {
++  (void)pc;
++  (void)is_write;
++  (void)value;
++  auto* card = static_cast<Card*>(instance);
++  if (card == nullptr) {
++    return 0;
++  }
++  switch (addr & 0x0F) {
++    case reg_a:
++      return card->a;
++    case reg_x:
++      return card->x;
++    case reg_y:
++      return card->y;
++    case reg_count_lo:
++      return static_cast<uint8_t>(card->copy.size() & 0xFF);
++    case reg_count_hi:
++      return static_cast<uint8_t>((card->copy.size() >> 8) & 0xFF);
++    case reg_dest_lo:
++      return static_cast<uint8_t>(card->dest & 0xFF);
++    case reg_dest_hi:
++      return static_cast<uint8_t>(card->dest >> 8);
++    case reg_data:
++      return card->copied < card->copy.size() ? card->copy[card->copied++]
++                                              : 0;
++    default:
++      return card->host->ReadFloatingBus != nullptr
++                 ? card->host->ReadFloatingBus(cycles)
++                 : 0;
++  }
++}
++
++auto config_string(HostInterface* host, const char* section, const char* key,
++                   const char* fallback) -> std::string {
++  char buffer[128] = {};
++  if (host->GetConfig != nullptr &&
++      host->GetConfig(section, key, buffer, sizeof(buffer)) &&
++      buffer[0] != '\0') {
++    return buffer;
++  }
++  return fallback;
++}
++
++auto config_int(HostInterface* host, const char* key, int fallback) -> int {
++  const std::string value = config_string(host, config_section, key, "");
++  if (value.empty()) {
++    return fallback;
++  }
++  char* end = nullptr;
++  const long n = std::strtol(value.c_str(), &end, 10);
++  return (end != value.c_str()) ? static_cast<int>(n) : fallback;
++}
++
++
++auto new_card(int slot, HostInterface* host) -> std::unique_ptr<Card> {
++  if (host == nullptr || host->RegisterIO == nullptr ||
++      host->RegisterCxROM == nullptr || host->get_mem_ptr == nullptr ||
++      slot < 1 || slot > 7) {
++    return nullptr;
++  }
++  std::unique_ptr<Card> card(new (std::nothrow) Card());
++  if (card) {
++    card->host = host;
++    card->slot = slot;
++  }
++  return card;
++}
++
++auto install(Card* card) -> void {
++  card->host->RegisterCxROM(card->slot, smartport_rom[card->slot - 1]);
++  card->host->RegisterIO(card->slot, smartport_io_read, smartport_io_write,
++                         nullptr, nullptr);
++}
++
++// --- FujiNet card -------------------------------------------------------------
++
++auto fujinet_init(int slot, HostInterface* host) -> void* {
++  std::unique_ptr<Card> card = new_card(slot, host);
++  if (!card) {
++    return nullptr;
++  }
++  std::unique_ptr<fujinet::Link> link(new (std::nothrow) fujinet::Link());
++  if (!link) {
++    return nullptr;
++  }
++
++  const std::string address =
++      config_string(host, config_section, "Listen Address", default_address);
++  int port = config_int(host, "Port", default_port);
++  if (port <= 0 || port > 65535) {
++    port = default_port;
++  }
++  int timeout = config_int(host, "Response Timeout", default_timeout_s);
++  if (timeout <= 0) {
++    timeout = default_timeout_s;
++  }
++  int boot_wait = config_int(host, "Boot Wait", default_boot_wait_s);
++  if (boot_wait < 0) {
++    boot_wait = 0;
++  }
++  card->boot_wait = std::chrono::seconds(boot_wait);
++
++  std::string error;
++  if (!link->start(address, static_cast<uint16_t>(port),
++                   std::chrono::seconds(timeout), &error)) {
++    if (host->Log != nullptr) {
++      host->Log(nullptr, log_error,
++                "FujiNet card in slot %d: cannot listen on %s (%s)\n", slot,
++                address.c_str(), error.c_str());
++    }
++  } else if (host->Log != nullptr) {
++    host->Log(nullptr, log_info,
++              "FujiNet card in slot %d: waiting for FujiNet-PC on %s:%d\n",
++              slot, address.c_str(), port);
++  }
++
++  card->link = link.get();
++  card->backend = std::move(link);
++  install(card.get());
++  return card.release();
++}
++
++// --- SmartPort card -----------------------------------------------------------
++
++// Drives 3 and 4, the UniDisk 3.5 drives, keep their images under these
++// keys; drives 1 and 2 are the hard disk keys the frontend keeps.
++constexpr const char* drive_35_keys[2] = {"SmartPort 3.5 Image 1",
++                                          "SmartPort 3.5 Image 2"};
++constexpr const char* config_main_section = "Configuration";
++
++auto remember_35(Card* card, int index) -> void {
++  if (index < 2 || card->host->SetConfig == nullptr) {
++    return;
++  }
++  const smartport::LocalUnitInfo info = card->disks->info(index);
++  card->host->SetConfig(config_main_section, drive_35_keys[index - 2],
++                        info.loaded ? info.path.c_str() : "");
++}
++
++auto smartport_init(int slot, HostInterface* host) -> void* {
++  std::unique_ptr<Card> card = new_card(slot, host);
++  if (!card) {
++    return nullptr;
++  }
++  std::unique_ptr<smartport::LocalDisks> disks(new (std::nothrow)
++                                                   smartport::LocalDisks());
++  if (!disks) {
++    return nullptr;
++  }
++  for (int i = 0; i < 2; ++i) {
++    const std::string path =
++        config_string(host, config_main_section, drive_35_keys[i], "");
++    if (!path.empty() && disks->insert(2 + i, path, false) != 0 &&
++        host->Log != nullptr) {
++      host->Log(nullptr, log_warn, "SmartPort 3.5 drive %d: cannot mount %s\n",
++                i + 1, path.c_str());
++    }
++  }
++  card->disks = disks.get();
++  card->backend = std::move(disks);
++  install(card.get());
++  return card.release();
++}
++
++auto smartport_card_command(void* instance, uint32_t cmd_id, const void* data,
++                            size_t size) -> PeripheralStatus {
++  auto* card = static_cast<Card*>(instance);
++  if (card == nullptr || card->disks == nullptr || data == nullptr) {
++    return peripheral_error;
++  }
++  switch (cmd_id) {
++    case harddisk_cmd_insert: {
++      if (size < sizeof(HarddiskInsertCmd)) {
++        return peripheral_error;
++      }
++      HarddiskInsertCmd cmd{};
++      std::memcpy(&cmd, data, sizeof(cmd));
++      cmd.path[sizeof(cmd.path) - 1] = '\0';
++      if (cmd.drive >= smartport::local_unit_count) {
++        return peripheral_error;
++      }
++      card->disks->insert(cmd.drive, cmd.path, cmd.write_protected != 0);
++      remember_35(card, cmd.drive);
++      return peripheral_ok;
++    }
++    case harddisk_cmd_eject: {
++      if (size < sizeof(HarddiskEjectCmd)) {
++        return peripheral_error;
++      }
++      const auto* cmd = static_cast<const HarddiskEjectCmd*>(data);
++      if (cmd->drive >= smartport::local_unit_count) {
++        return peripheral_error;
++      }
++      card->disks->eject(cmd->drive);
++      remember_35(card, cmd->drive);
++      return peripheral_ok;
++    }
++    case harddisk_cmd_set_protect: {
++      if (size < sizeof(HarddiskSetProtectCmd)) {
++        return peripheral_error;
++      }
++      const auto* cmd = static_cast<const HarddiskSetProtectCmd*>(data);
++      if (cmd->drive >= smartport::local_unit_count) {
++        return peripheral_error;
++      }
++      card->disks->set_protect(cmd->drive, cmd->write_protected != 0);
++      return peripheral_ok;
++    }
++    default:
++      return peripheral_incompatible;
++  }
++}
++
++constexpr const char* local_extensions =
++    "po;hdv;2mg;2img;img;raw;zip;gz";
++
++auto smartport_card_query(void* instance, uint32_t query_id, void* out,
++                          size_t* size) -> PeripheralStatus {
++  if (size == nullptr) {
++    return peripheral_error;
++  }
++  if (query_id == harddisk_query_supported_extensions) {
++    const size_t needed = std::strlen(local_extensions) + 1;
++    if (out == nullptr || *size < needed) {
++      *size = needed;
++      return out == nullptr ? peripheral_ok : peripheral_error;
++    }
++    std::memcpy(out, local_extensions, needed);
++    *size = needed;
++    return peripheral_ok;
++  }
++  if (query_id != harddisk_query_status) {
++    return peripheral_incompatible;
++  }
++  if (out == nullptr) {
++    *size = sizeof(HarddiskStatus);
++    return peripheral_ok;
++  }
++  auto* card = static_cast<Card*>(instance);
++  if (card == nullptr || card->disks == nullptr ||
++      *size < sizeof(HarddiskStatus)) {
++    *size = sizeof(HarddiskStatus);
++    return peripheral_error;
++  }
++  HarddiskStatus status{};
++  const smartport::LocalUnitInfo d0 = card->disks->info(0);
++  const smartport::LocalUnitInfo d1 = card->disks->info(1);
++  status.drive0_last_error = d0.last_error;
++  status.drive1_last_error = d1.last_error;
++  status.drive0_loaded = d0.loaded ? 1 : 0;
++  status.drive1_loaded = d1.loaded ? 1 : 0;
++  status.drive0_write_protected = d0.write_protected ? 1 : 0;
++  status.drive1_write_protected = d1.write_protected ? 1 : 0;
++  const uint8_t activity = card->disks->activity();
++  status.activity_status =
++      static_cast<uint8_t>(((activity & 0x01) != 0 ? harddisk_status_read : 0) |
++                           ((activity & 0x02) != 0 ? harddisk_status_write : 0));
++  card->disks->clear_activity();
++  std::strncpy(status.drive0_name, d0.name.c_str(),
++               sizeof(status.drive0_name) - 1);
++  std::strncpy(status.drive1_name, d1.name.c_str(),
++               sizeof(status.drive1_name) - 1);
++  std::strncpy(status.drive0_full_path, d0.path.c_str(),
++               sizeof(status.drive0_full_path) - 1);
++  std::strncpy(status.drive1_full_path, d1.path.c_str(),
++               sizeof(status.drive1_full_path) - 1);
++  *size = sizeof(status);
++  return peripheral_ok;
++}
++
++// --- shared -------------------------------------------------------------------
++
++// A reset or power cycle leaves the units as they are (FujiNet-PC stays
++// connected, as a real FujiNet stays up across the Apple's reset). ProDOS
++// drives are looked up again.
++auto smartport_reset(void* instance) -> void {
++  auto* card = static_cast<Card*>(instance);
++  if (card != nullptr) {
++    card->drives_known = false;
++    card->copy.clear();
++    card->copied = 0;
++  }
++}
++
++auto smartport_shutdown(void* instance) -> void {
++  std::unique_ptr<Card> card(static_cast<Card*>(instance));
++  if (card && card->link != nullptr) {
++    card->link->stop();
++  }
++  if (card && card->disks != nullptr) {
++    card->disks->flush();
++  }
++}
++
++auto fujinet_command(void* instance, uint32_t cmd_id, const void* data,
++                     size_t size) -> PeripheralStatus {
++  (void)cmd_id;
++  (void)data;
++  (void)size;
++  return instance == nullptr ? peripheral_error : peripheral_incompatible;
++}
++
++auto fujinet_query(void* instance, uint32_t query_id, void* out,
++                   size_t* size) -> PeripheralStatus {
++  (void)instance;
++  (void)query_id;
++  (void)out;
++  return size == nullptr ? peripheral_error : peripheral_incompatible;
++}
++
++}  // namespace
++
++// Neither card keeps state of its own in a save state: what they serve lives
++// in the images and in FujiNet-PC, which carry on regardless.
++static Peripheral smartport_peripheral = {
++    .abi_version = LINAPPLE_ABI_VERSION,
++    .id = "linapple.smartport",
++    .name = "SmartPort",
++    .description =
++        "SmartPort controller: 2 hard disks and 2 UniDisk 3.5 drives",
++    .author = "LinApple Contributors",
++    .version = VERSIONSTRING,
++    .compatible_slots = PERIPHERAL_MASK_EXPANSION,
++    .default_slot = -1,
++    .init = smartport_init,
++    .reset = smartport_reset,
++    .shutdown = smartport_shutdown,
++    .think = nullptr,
++    .on_vblank = nullptr,
++    .save_state = nullptr,
++    .load_state = nullptr,
++    .command = smartport_card_command,
++    .query = smartport_card_query,
++};
++
++static Peripheral fujinet_peripheral = {
++    .abi_version = LINAPPLE_ABI_VERSION,
++    .id = "linapple.fujinet",
++    .name = "FujiNet",
++    .description = "FujiNet over SmartPort-over-SLIP (FujiNet-PC)",
++    .author = "LinApple Contributors",
++    .version = VERSIONSTRING,
++    .compatible_slots = PERIPHERAL_MASK_EXPANSION,
++    .default_slot = -1,
++    .init = fujinet_init,
++    .reset = smartport_reset,
++    .shutdown = smartport_shutdown,
++    .think = nullptr,
++    .on_vblank = nullptr,
++    .save_state = nullptr,
++    .load_state = nullptr,
++    .command = fujinet_command,
++    .query = fujinet_query,
++};
++
++auto smartport_get_descriptor() -> Peripheral* {
++  return &smartport_peripheral;
++}
++auto fujinet_get_descriptor() -> Peripheral* { return &fujinet_peripheral; }
++
++PERIPHERAL_REGISTER(smartport_peripheral)
++PERIPHERAL_REGISTER(fujinet_peripheral)
+diff --git a/src/apple2/peripherals/smartport/SmartPortCard.h b/src/apple2/peripherals/smartport/SmartPortCard.h
+new file mode 100644
+index 0000000..e56714f
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/SmartPortCard.h
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#pragma once
++
++struct Peripheral;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct Peripheral* smartport_get_descriptor(void);
++struct Peripheral* fujinet_get_descriptor(void);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/src/apple2/peripherals/smartport/SmartPortRom.h b/src/apple2/peripherals/smartport/SmartPortRom.h
+new file mode 100644
+index 0000000..abef610
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/SmartPortRom.h
+@@ -0,0 +1,135 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Generated by firmware/gen_rom.sh from firmware/smartport.s; do not edit.
++#pragma once
++
++#include <cstdint>
++
++// One 256-byte $Cn00 page per slot, index 0 = slot 1.
++static const uint8_t smartport_rom[7][256] = {
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x10, 0x85, 0x43, 0x20, 0x68, 0xc1, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x10, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc1, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc1, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0x91, 0xc0, 0xa9,
++        0x65, 0x8d, 0x90, 0xc0, 0x20, 0x99, 0xc1, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc1, 0xa9, 0x66, 0x8d, 0x90, 0xc0, 0x20, 0x99, 0xc1, 0xae, 0x93, 0xc0,
++        0xac, 0x94, 0xc0, 0xad, 0x92, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0x97, 0xc0, 0x85, 0x44, 0xad, 0x98, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0x96, 0xc0, 0xf0, 0x0d,
++        0xad, 0x99, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0x95, 0xc0,
++        0xf0, 0x09, 0xad, 0x99, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x20, 0x85, 0x43, 0x20, 0x68, 0xc2, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x20, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc2, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc2, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0xa1, 0xc0, 0xa9,
++        0x65, 0x8d, 0xa0, 0xc0, 0x20, 0x99, 0xc2, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc2, 0xa9, 0x66, 0x8d, 0xa0, 0xc0, 0x20, 0x99, 0xc2, 0xae, 0xa3, 0xc0,
++        0xac, 0xa4, 0xc0, 0xad, 0xa2, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0xa7, 0xc0, 0x85, 0x44, 0xad, 0xa8, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0xa6, 0xc0, 0xf0, 0x0d,
++        0xad, 0xa9, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0xa5, 0xc0,
++        0xf0, 0x09, 0xad, 0xa9, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x30, 0x85, 0x43, 0x20, 0x68, 0xc3, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x30, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc3, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc3, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0xb1, 0xc0, 0xa9,
++        0x65, 0x8d, 0xb0, 0xc0, 0x20, 0x99, 0xc3, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc3, 0xa9, 0x66, 0x8d, 0xb0, 0xc0, 0x20, 0x99, 0xc3, 0xae, 0xb3, 0xc0,
++        0xac, 0xb4, 0xc0, 0xad, 0xb2, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0xb7, 0xc0, 0x85, 0x44, 0xad, 0xb8, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0xb6, 0xc0, 0xf0, 0x0d,
++        0xad, 0xb9, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0xb5, 0xc0,
++        0xf0, 0x09, 0xad, 0xb9, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x40, 0x85, 0x43, 0x20, 0x68, 0xc4, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x40, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc4, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc4, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0xc1, 0xc0, 0xa9,
++        0x65, 0x8d, 0xc0, 0xc0, 0x20, 0x99, 0xc4, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc4, 0xa9, 0x66, 0x8d, 0xc0, 0xc0, 0x20, 0x99, 0xc4, 0xae, 0xc3, 0xc0,
++        0xac, 0xc4, 0xc0, 0xad, 0xc2, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0xc7, 0xc0, 0x85, 0x44, 0xad, 0xc8, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0xc6, 0xc0, 0xf0, 0x0d,
++        0xad, 0xc9, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0xc5, 0xc0,
++        0xf0, 0x09, 0xad, 0xc9, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x50, 0x85, 0x43, 0x20, 0x68, 0xc5, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x50, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc5, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc5, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0xd1, 0xc0, 0xa9,
++        0x65, 0x8d, 0xd0, 0xc0, 0x20, 0x99, 0xc5, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc5, 0xa9, 0x66, 0x8d, 0xd0, 0xc0, 0x20, 0x99, 0xc5, 0xae, 0xd3, 0xc0,
++        0xac, 0xd4, 0xc0, 0xad, 0xd2, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0xd7, 0xc0, 0x85, 0x44, 0xad, 0xd8, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0xd6, 0xc0, 0xf0, 0x0d,
++        0xad, 0xd9, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0xd5, 0xc0,
++        0xf0, 0x09, 0xad, 0xd9, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x60, 0x85, 0x43, 0x20, 0x68, 0xc6, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x60, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc6, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc6, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0xe1, 0xc0, 0xa9,
++        0x65, 0x8d, 0xe0, 0xc0, 0x20, 0x99, 0xc6, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc6, 0xa9, 0x66, 0x8d, 0xe0, 0xc0, 0x20, 0x99, 0xc6, 0xae, 0xe3, 0xc0,
++        0xac, 0xe4, 0xc0, 0xad, 0xe2, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0xe7, 0xc0, 0x85, 0x44, 0xad, 0xe8, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0xe6, 0xc0, 0xf0, 0x0d,
++        0xad, 0xe9, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0xe5, 0xc0,
++        0xf0, 0x09, 0xad, 0xe9, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++    {
++        0xe0, 0x20, 0xa2, 0x00, 0xe0, 0x03, 0xe0, 0x00, 0x86, 0x46, 0x86, 0x47, 0x86, 0x44, 0xe8, 0x86,
++        0x42, 0xa9, 0x08, 0x85, 0x45, 0xa9, 0x70, 0x85, 0x43, 0x20, 0x68, 0xc7, 0xb0, 0x11, 0xad, 0x00,
++        0x08, 0xc9, 0x01, 0xd0, 0x0a, 0xad, 0x01, 0x08, 0xf0, 0x05, 0xa2, 0x70, 0x4c, 0x01, 0x08, 0xa5,
++        0x00, 0xd0, 0x0e, 0xa5, 0x01, 0xc9, 0xc7, 0xd0, 0x08, 0xcd, 0xf8, 0x07, 0xd0, 0x03, 0x4c, 0xba,
++        0xfa, 0x20, 0x93, 0xfe, 0x20, 0x89, 0xfe, 0x20, 0x39, 0xfb, 0x20, 0x58, 0xfc, 0xa2, 0x00, 0xbd,
++        0x5d, 0xc7, 0xf0, 0x06, 0x20, 0xed, 0xfd, 0xe8, 0xd0, 0xf5, 0x4c, 0x00, 0xe0, 0xce, 0xcf, 0xa0,
++        0xc4, 0xc5, 0xd6, 0xc9, 0xc3, 0xc5, 0x8d, 0x00, 0x38, 0xb0, 0x1a, 0xba, 0x8e, 0xf1, 0xc0, 0xa9,
++        0x65, 0x8d, 0xf0, 0xc0, 0x20, 0x99, 0xc7, 0x68, 0x18, 0x69, 0x03, 0xaa, 0x68, 0x69, 0x00, 0x48,
++        0x8a, 0x48, 0x4c, 0x8d, 0xc7, 0xa9, 0x66, 0x8d, 0xf0, 0xc0, 0x20, 0x99, 0xc7, 0xae, 0xf3, 0xc0,
++        0xac, 0xf4, 0xc0, 0xad, 0xf2, 0xc0, 0xc9, 0x01, 0x60, 0xa5, 0x44, 0x48, 0xa5, 0x45, 0x48, 0xad,
++        0xf7, 0xc0, 0x85, 0x44, 0xad, 0xf8, 0xc0, 0x85, 0x45, 0xa0, 0x00, 0xae, 0xf6, 0xc0, 0xf0, 0x0d,
++        0xad, 0xf9, 0xc0, 0x91, 0x44, 0xc8, 0xd0, 0xf8, 0xe6, 0x45, 0xca, 0xd0, 0xf3, 0xae, 0xf5, 0xc0,
++        0xf0, 0x09, 0xad, 0xf9, 0xc0, 0x91, 0x44, 0xc8, 0xca, 0xd0, 0xf7, 0x68, 0x85, 0x45, 0x68, 0x85,
++        0x44, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x68,
++    },
++};
+diff --git a/src/apple2/peripherals/smartport/SmartPortTypes.h b/src/apple2/peripherals/smartport/SmartPortTypes.h
+new file mode 100644
+index 0000000..1d90e91
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/SmartPortTypes.h
+@@ -0,0 +1,71 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// What the SmartPort card asks of whatever holds its units: disk images on
++// the host (LocalDisks) or a FujiNet-PC over TCP (FujiNetLink). Both answer
++// in SmartPort's own terms, a status byte and the reply's data bytes, so the
++// card's 6502-facing side is the same for either.
++#pragma once
++
++#include <chrono>
++#include <cstdint>
++#include <vector>
++
++namespace smartport {
++
++enum Command : uint8_t {
++  cmd_status = 0,
++  cmd_read_block = 1,
++  cmd_write_block = 2,
++  cmd_format = 3,
++  cmd_control = 4,
++  cmd_init = 5,
++  cmd_open = 6,
++  cmd_close = 7,
++  cmd_read = 8,
++  cmd_write = 9,
++};
++
++// SmartPort error codes (Apple IIc Technical Reference, SmartPort chapter).
++enum Error : uint8_t {
++  err_none = 0x00,
++  err_bad_command = 0x01,
++  err_bad_param_count = 0x04,
++  err_bus = 0x06,
++  err_bad_unit = 0x11,
++  err_bad_status_code = 0x21,
++  err_bad_control_code = 0x21,
++  err_io = 0x27,
++  err_no_drive = 0x28,
++  err_write_protected = 0x2B,
++  err_bad_block = 0x2D,
++  err_offline = 0x2F,
++};
++
++struct Reply {
++  bool ok = false;     // the request was answered at all
++  uint8_t status = 0;  // SmartPort status, 0 = no error
++  std::vector<uint8_t> data;
++};
++
++class Backend {
++ public:
++  Backend() = default;
++  virtual ~Backend() = default;
++  Backend(const Backend&) = delete;
++  auto operator=(const Backend&) -> Backend& = delete;
++
++  // Units 1..unit_count() exist.
++  virtual auto unit_count() -> uint8_t = 0;
++  // Bumped whenever units come or go, or media changes.
++  virtual auto generation() const -> uint32_t = 0;
++  // Gives a backend that starts after the Apple a chance to come up.
++  virtual auto wait_until_ready(std::chrono::milliseconds wait) -> void {
++    (void)wait;
++  }
++  // One SmartPort call to a unit. params holds the call's parameter bytes
++  // after the buffer pointer (up to 5); payload the bytes it sends.
++  virtual auto request(uint8_t unit, uint8_t command, uint8_t param_count,
++                       const std::vector<uint8_t>& params,
++                       const std::vector<uint8_t>& payload) -> Reply = 0;
++};
++
++}  // namespace smartport
+diff --git a/src/apple2/peripherals/smartport/firmware/gen_rom.sh b/src/apple2/peripherals/smartport/firmware/gen_rom.sh
+new file mode 100755
+index 0000000..afe408a
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/firmware/gen_rom.sh
+@@ -0,0 +1,28 @@
++#!/bin/sh
++# Rebuild SmartPortRom.h from smartport.s for slots 1-7 (needs cc65).
++set -e
++cd "$(dirname "$0")"
++out=../SmartPortRom.h
++tmp=$(mktemp -d)
++{
++  echo "// SPDX-License-Identifier: GPL-2.0-only"
++  echo "// Generated by firmware/gen_rom.sh from firmware/smartport.s; do not edit."
++  echo "#pragma once"
++  echo
++  echo "#include <cstdint>"
++  echo
++  echo "// One 256-byte \$Cn00 page per slot, index 0 = slot 1."
++  echo "static const uint8_t smartport_rom[7][256] = {"
++  for s in 1 2 3 4 5 6 7; do
++    ca65 -D SLOT=$s -o "$tmp/f$s.o" smartport.s
++    ld65 -t none -o "$tmp/f$s.bin" "$tmp/f$s.o"
++    size=$(wc -c < "$tmp/f$s.bin")
++    [ "$size" -eq 256 ] || { echo "slot $s image is $size bytes" >&2; exit 1; }
++    echo "    {"
++    od -An -v -tx1 "$tmp/f$s.bin" | sed 's/  */ /g; s/^ //; s/ $//; s/\([0-9a-f][0-9a-f]\)/0x\1,/g; s/^/        /'
++    echo "    },"
++  done
++  echo "};"
++} > "$out"
++rm -rf "$tmp"
++echo "wrote $out"
+diff --git a/src/apple2/peripherals/smartport/firmware/smartport.s b/src/apple2/peripherals/smartport/firmware/smartport.s
+new file mode 100644
+index 0000000..ebb67b8
+--- /dev/null
++++ b/src/apple2/peripherals/smartport/firmware/smartport.s
+@@ -0,0 +1,183 @@
++; SmartPort card firmware for LinApple: the SmartPort card (local hard disk
++; and 3.5" images) and the FujiNet card (FujiNet-PC over TCP) share it.
++;
++; Assembled once per slot:  ca65 -D SLOT=n smartport.s && ld65 -t none ...
++; (gen_rom.sh does this for slots 1-7 and writes SmartPortRom.h).
++;
++; The card answers SmartPort and ProDOS block calls itself, from disk images
++; or from a FujiNet-PC over TCP. The 6502 side only tells the card a call is
++; being made and then
++; moves the reply into memory itself, so every write goes through the 6502's
++; own bank switching (main/aux, language card) exactly like a real card's.
++;
++; Card registers, $C080 + SLOT*16 + n:
++;   +0 W  start a call: $65 SmartPort, $66 ProDOS
++;   +1 W  stack pointer at the SmartPort entry (the card reads the caller's
++;         return address, command byte and command list from it)
++;   +2 R  A to return (0 = no error)
++;   +3 R  X to return
++;   +4 R  Y to return
++;   +5 R  bytes to copy to memory, low
++;   +6 R  bytes to copy to memory, high (whole pages)
++;   +7 R  copy destination, low
++;   +8 R  copy destination, high
++;   +9 R  next byte to copy
++
++.ifndef SLOT
++SLOT = 7
++.endif
++
++IO      = $C080 + SLOT * 16
++CN      = $C0 + SLOT
++SLOT16  = SLOT * 16
++
++cmd     := $42                  ; ProDOS driver parameters
++unit    := $43
++bufl    := $44
++bufh    := $45
++blockl  := $46
++blockh  := $47
++
++loc0    := $00
++loc1    := $01
++mslot   := $07F8
++
++cout    := $FDED
++setkbd  := $FE89
++setscr  := $FE93
++sloop   := $FABA                ; continue the Monitor's slot scan
++settxt  := $FB39
++home    := $FC58
++basic   := $E000
++
++        .org    CN * 256
++
++; SmartPort / ProDOS block device signature: $Cn01=$20 $Cn03=$00 $Cn05=$03
++; $Cn07=$00.
++header:
++        cpx     #$20
++        ldx     #$00
++        cpx     #$03
++        cpx     #$00
++
++; Boot: read block 0 into $0800 and run it, as a ProDOS boot block expects.
++boot:
++        stx     blockl
++        stx     blockh
++        stx     bufl
++        inx                     ; 1 = READ
++        stx     cmd
++        lda     #$08
++        sta     bufh
++        lda     #SLOT16         ; drive 1 of this slot
++        sta     unit
++        jsr     driver
++        bcs     noboot
++        lda     $0800           ; a ProDOS boot block starts with 1
++        cmp     #$01
++        bne     noboot
++        lda     $0801
++        beq     noboot
++        ldx     #SLOT16
++        jmp     $0801
++
++; Nothing to boot. During the Monitor's autostart scan ($00/$01 hold $Cn00
++; and MSLOT is this slot) go on to the next slot, as an empty drive would.
++noboot:
++        lda     loc0
++        bne     message
++        lda     loc1
++        cmp     #CN
++        bne     message
++        cmp     mslot
++        bne     message
++        jmp     sloop
++
++message:
++        jsr     setscr
++        jsr     setkbd
++        jsr     settxt
++        jsr     home
++        ldx     #0
++@print: lda     text,x
++        beq     @done
++        jsr     cout
++        inx
++        bne     @print
++@done:  jmp     basic
++
++text:   .byte   $CE,$CF,$A0,$C4,$C5,$D6,$C9,$C3,$C5  ; "NO DEVICE"
++        .byte   $8D, 0
++
++; ProDOS entry. SmartPort is three bytes on, as the protocol requires.
++driver:
++        sec
++        bcs     prodos
++
++smartport:
++        tsx
++        stx     IO+1
++        lda     #$65
++        sta     IO+0
++        jsr     copy
++        pla                     ; step over the command byte and list
++        clc                     ; pointer that follow the caller's JSR
++        adc     #3
++        tax
++        pla
++        adc     #0
++        pha
++        txa
++        pha
++        jmp     finish
++
++prodos:
++        lda     #$66
++        sta     IO+0
++        jsr     copy
++
++finish:
++        ldx     IO+3
++        ldy     IO+4
++        lda     IO+2
++        cmp     #$01            ; carry set when A holds an error
++        rts
++
++; Move the card's reply into memory, through $44/$45, which are put back.
++copy:
++        lda     bufl
++        pha
++        lda     bufh
++        pha
++        lda     IO+7
++        sta     bufl
++        lda     IO+8
++        sta     bufh
++        ldy     #0
++        ldx     IO+6
++        beq     @part
++@page:  lda     IO+9
++        sta     (bufl),y
++        iny
++        bne     @page
++        inc     bufh
++        dex
++        bne     @page
++@part:  ldx     IO+5
++        beq     @done
++@byte:  lda     IO+9
++        sta     (bufl),y
++        iny
++        dex
++        bne     @byte
++@done:  pla
++        sta     bufh
++        pla
++        sta     bufl
++        rts
++
++        .res    $FC - <*, $00
++
++        .word   $0000           ; block count: ask with STATUS
++        .byte   $F7             ; ProDOS status bits
++        .byte   <driver         ; ProDOS entry point
+diff --git a/src/frontends/common/AppController.cpp b/src/frontends/common/AppController.cpp
+index fb9b580..74335dc 100644
+--- a/src/frontends/common/AppController.cpp
++++ b/src/frontends/common/AppController.cpp
+@@ -207,6 +207,22 @@ static auto apply_screen_factor() -> void {
+   }
+ }
+ 
++// "Screen Width" and "Screen Height", documented in linapple.conf, set the
++// window (or full screen) size directly and win over "Screen factor".
++static auto apply_screen_size() -> void {
++  uint32_t width = 0;
++  uint32_t height = 0;
++  if (!config_load_int("Configuration", "Screen Width", &width) ||
++      !config_load_int("Configuration", "Screen Height", &height)) {
++    return;
++  }
++  if (width >= SCREEN_WIDTH / 2U && height >= SCREEN_HEIGHT / 2U &&
++      width <= 8192U && height <= 8192U) {
++    system_state.screen_width = static_cast<uint32_t>(width);
++    system_state.screen_height = static_cast<uint32_t>(height);
++  }
++}
++
+ static auto autoload_startup_disks(const AppConfig* config) -> void {
+   uint32_t autoload = 0;
+   bool has_autoload =
+@@ -284,6 +300,7 @@ auto app_controller_initialize(AppConfig* config) -> int {
+   linapple_set_shift_key_mod(joystick_config_shift_key_mod());
+ 
+   apply_screen_factor();
++  apply_screen_size();
+ 
+   if (config->is_pal) {
+     videotype = VT_COLOR_TVEMU;
+@@ -484,7 +501,7 @@ static auto load_initial_harddisks(const AppConfig& config) -> void {
+     return;
+   }
+ 
+-  if (peripheral_slot_of(harddisk_card_id) < 0) {
++  if (harddisk_frontend_slot() < 0) {
+     const int from_args = first_harddisk_from_args(config);
+     if (from_args < 0) {
+       Logger::warning(
+diff --git a/src/frontends/common/HarddiskFrontend.cpp b/src/frontends/common/HarddiskFrontend.cpp
+index bd12bfd..447e1c3 100644
+--- a/src/frontends/common/HarddiskFrontend.cpp
++++ b/src/frontends/common/HarddiskFrontend.cpp
+@@ -17,6 +17,9 @@
+ namespace {
+ 
+ constexpr const char* harddisk_id = "linapple.harddisk";
++// The SmartPort card takes the hard disk commands for its drives 1 and 2,
++// and is preferred when both cards are installed.
++constexpr const char* smartport_id = "linapple.smartport";
+ 
+ int card_slot = harddisk_frontend_no_card;
+ 
+@@ -95,7 +98,10 @@ auto insert(int drive, const char* path, bool write_protected, bool record)
+ }  // namespace
+ 
+ auto harddisk_frontend_initialize() -> void {
+-  card_slot = peripheral_slot_of(harddisk_id);
++  card_slot = peripheral_slot_of(smartport_id);
++  if (card_slot < 0) {
++    card_slot = peripheral_slot_of(harddisk_id);
++  }
+ }
+ 
+ auto harddisk_frontend_slot() -> int { return card_slot; }
+diff --git a/src/frontends/common/sdl/DiskChoose_Decl.h b/src/frontends/common/sdl/DiskChoose_Decl.h
+index 4f6103d..724ede5 100644
+--- a/src/frontends/common/sdl/DiskChoose_Decl.h
++++ b/src/frontends/common/sdl/DiskChoose_Decl.h
+@@ -18,6 +18,8 @@ auto choose_image_dialog(int sx, int sy, const std::string& dir, int slot,
+ auto draw_frame_window() -> void;
+ 
+ auto disk_select(int drive) -> void;
++// Ejects the SmartPort card's 3.5" drive 1 or 2 (units 3, 4), if there is one.
++auto smartport_eject_35(int drive) -> void;
+ auto disk_ftp_select_image(int drive) -> void;
+ auto harddisk_ui_select(int drive) -> void;
+ auto harddisk_ui_ftp_select(int drive) -> void;
+diff --git a/src/frontends/common/sdl/DiskSelect.cpp b/src/frontends/common/sdl/DiskSelect.cpp
+index 494a285..0ab480f 100644
+--- a/src/frontends/common/sdl/DiskSelect.cpp
++++ b/src/frontends/common/sdl/DiskSelect.cpp
+@@ -1,11 +1,15 @@
+ // SPDX-License-Identifier: GPL-2.0-only
++#include <sys/stat.h>
++
+ #include <cstdint>
++#include <cstdio>
+ #include <cstring>
+ #include <string>
+ 
+ #include "apple2/peripherals/Peripheral.h"
+ #include "apple2/peripherals/Peripheral_Types.h"
+ #include "apple2/peripherals/disk/DiskCommands.h"
++#include "apple2/peripherals/harddisk/HarddiskCommands.h"
+ #include "core/LinAppleCore.h"
+ #include "core/Log.h"
+ #include "core/Registry.h"
+@@ -20,6 +24,68 @@
+ #include "frontends/common/FtpDialog.h"
+ #endif
+ 
++namespace {
++
++// A 400K or 800K ProDOS image is a 3.5" disk: with a SmartPort card
++// installed it goes into the card's UniDisk 3.5 drive of the same number
++// (units 3 and 4) instead of the Disk II.
++constexpr uint64_t bytes_400k = 409600;
++constexpr uint64_t bytes_800k = 819200;
++
++auto is_35_image(const std::string& path) -> bool {
++  struct stat st {};
++  if (stat(path.c_str(), &st) != 0) {
++    return false;
++  }
++  const auto size = static_cast<uint64_t>(st.st_size);
++  if (size == bytes_400k || size == bytes_800k) {
++    return true;
++  }
++  FILE* f = std::fopen(path.c_str(), "rb");
++  if (f == nullptr) {
++    return false;
++  }
++  uint8_t header[32] = {};
++  const size_t got = std::fread(header, 1, sizeof(header), f);
++  std::fclose(f);
++  if (got == sizeof(header) && std::memcmp(header, "2IMG", 4) == 0) {
++    const uint32_t length = static_cast<uint32_t>(header[28]) |
++                            (static_cast<uint32_t>(header[29]) << 8) |
++                            (static_cast<uint32_t>(header[30]) << 16) |
++                            (static_cast<uint32_t>(header[31]) << 24);
++    return length == bytes_400k || length == bytes_800k;
++  }
++  return false;
++}
++
++auto smartport_slot() -> int {
++  return peripheral_slot_of("linapple.smartport");
++}
++
++auto insert_35(int drive, const std::string& path) -> bool {
++  const int slot = smartport_slot();
++  if (slot < 0 || !is_35_image(path)) {
++    return false;
++  }
++  HarddiskInsertCmd cmd{};
++  cmd.drive = static_cast<uint8_t>(2 + drive);
++  util_safe_strcpy(cmd.path, path.c_str(), sizeof(cmd.path));
++  return peripheral_command(slot, harddisk_cmd_insert, &cmd, sizeof(cmd)) ==
++         peripheral_ok;
++}
++
++}  // namespace
++
++auto smartport_eject_35(int drive) -> void {
++  const int slot = smartport_slot();
++  if (slot < 0 || drive < 0 || drive > 1) {
++    return;
++  }
++  HarddiskEjectCmd cmd{};
++  cmd.drive = static_cast<uint8_t>(2 + drive);
++  peripheral_command(slot, harddisk_cmd_eject, &cmd, sizeof(cmd));
++}
++
+ auto disk_select(int drive) -> void {
+   if (drive < 0 || drive > 1) {
+     return;
+@@ -74,14 +140,16 @@ auto disk_select(int drive) -> void {
+   const std::string file_path =
+       (full_path == "/") ? ("/" + filename) : (full_path + "/" + filename);
+ 
+-  DiskInsertCmd cmd{};
+-  cmd.drive = static_cast<uint8_t>(drive);
+-  util_safe_strcpy(cmd.path, file_path.c_str(), sizeof(cmd.path));
+-  cmd.write_protected = 0;
++  if (!insert_35(drive, file_path)) {
++    DiskInsertCmd cmd{};
++    cmd.drive = static_cast<uint8_t>(drive);
++    util_safe_strcpy(cmd.path, file_path.c_str(), sizeof(cmd.path));
++    cmd.write_protected = 0;
+ 
+-  if (peripheral_command(disk_default_slot, disk_cmd_insert, &cmd,
+-                         sizeof(cmd)) == peripheral_ok) {
+-    app_controller_save_disk_config(drive);
++    if (peripheral_command(disk_default_slot, disk_cmd_insert, &cmd,
++                           sizeof(cmd)) == peripheral_ok) {
++      app_controller_save_disk_config(drive);
++    }
+   }
+ 
+   back_idx = file_index;
+diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
+index b1ae928..ae562af 100644
+--- a/src/frontends/sdl1/Frame.cpp
++++ b/src/frontends/sdl1/Frame.cpp
+@@ -133,6 +133,7 @@ auto handle_btn_drive(int drive_idx, int mod) -> void {
+       harddisk_frontend_eject(drive_idx);
+     } else {
+       printf("Disk Eject Drive #%d\n", drive_idx + 1);
++      smartport_eject_35(drive_idx);
+       DiskEjectCmd ecmd{};
+       ecmd.drive = static_cast<uint8_t>(drive_idx);
+       if (peripheral_command(disk_default_slot, disk_cmd_eject, &ecmd,
+@@ -912,6 +913,12 @@ auto frame_create_window() -> int {
+   SDL_WM_SetCaption(app_title, app_title);
+   set_icon();
+ 
++  // Started full screen (-f or Fullscreen = 1): no pointer over the picture.
++  if (system_state.fullscreen) {
++    is_fullscreen = true;
++    SDL_ShowCursor(SDL_DISABLE);
++  }
++
+   window_resized = (system_state.screen_width != SCREEN_WIDTH) ||
+                      (system_state.screen_height != SCREEN_HEIGHT);
+   printf("Screen size is %ux%u\n", system_state.screen_width,
+diff --git a/src/frontends/sdl1/Frame.h b/src/frontends/sdl1/Frame.h
+index f8e1e33..2004e6f 100644
+--- a/src/frontends/sdl1/Frame.h
++++ b/src/frontends/sdl1/Frame.h
+@@ -68,3 +68,4 @@ auto harddisk_ui_ftp_select(int drive) -> void;
+ auto harddisk_ui_select(int drive) -> void;
+ auto disk_ftp_select_image(int drive) -> void;
+ auto disk_select(int drive) -> void;
++auto smartport_eject_35(int drive) -> void;
+diff --git a/src/frontends/sdl1/SnapshotGallery.cpp b/src/frontends/sdl1/SnapshotGallery.cpp
+index 5b077f8..ebf4bcf 100644
+--- a/src/frontends/sdl1/SnapshotGallery.cpp
++++ b/src/frontends/sdl1/SnapshotGallery.cpp
+@@ -269,6 +269,7 @@ auto draw_gallery(SDL_Surface* scr, const Layout& l,
+ auto erase_slot(int slot) -> void {
+   unlink(gallery_slot_path(slot, "aws").c_str());
+   unlink(gallery_slot_path(slot, "bmp").c_str());
++  sync();
+ }
+ 
+ }  // namespace
+@@ -293,6 +294,8 @@ auto gallery_quick_save(int slot) -> bool {
+     return false;
+   }
+   const bool shot = save_screenshot(gallery_slot_path(slot, "bmp"));
++  // The machine may simply be switched off: put both files on the disk now.
++  sync();
+   snprintf(msg.data(), msg.size(), shot ? "SAVED %d" : "SAVED %d (NO PICTURE)",
+            slot);
+   osd_toast(msg.data());
+-- 
+2.43.0
+

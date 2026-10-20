@@ -1,0 +1,761 @@
+From 04843a4b961048885c963d4a88cd5c609418e09a Mon Sep 17 00:00:00 2001
+From: James <james@localhost>
+Date: Mon, 19 Oct 2026 09:49:17 +0900
+Subject: [PATCH 1/4] sdl1: save slots with screenshots, on-screen messages and
+ a slot picker
+
+Quick save (modifier+Shift+0..9) now also writes SaveState<n>.bmp, a
+screenshot taken at the same moment, and both quick save and quick load
+show a short message over the picture.
+
+F10/F11 open a picker with a thumbnail and time for each of the ten
+slots and a large preview of the selected one. Shift+F10/F11 keep the
+old file browser; Alt+F10/F11 keep the direct load/save.
+
+save_state_save() now returns whether the state was written.
+---
+ CMakeLists.txt                            |   1 +
+ src/frontends/common/SaveStateManager.cpp |   9 +-
+ src/frontends/common/SaveStateManager.h   |   3 +-
+ src/frontends/sdl1/Frame.cpp              |  38 +-
+ src/frontends/sdl1/SnapshotGallery.cpp    | 527 ++++++++++++++++++++++
+ src/frontends/sdl1/SnapshotGallery.h      |  33 ++
+ 6 files changed, 596 insertions(+), 15 deletions(-)
+ create mode 100644 src/frontends/sdl1/SnapshotGallery.cpp
+ create mode 100644 src/frontends/sdl1/SnapshotGallery.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d8154a4..b14dea6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -473,6 +473,7 @@ set(SOURCES_FE_SDL1
+     src/frontends/sdl1/SDL_Asset.cpp
+     src/frontends/sdl1/SDL_Input.cpp
+     src/frontends/sdl1/SDL_Video.cpp
++    src/frontends/sdl1/SnapshotGallery.cpp
+ )
+ 
+ set(SOURCES_FE_HEADLESS
+diff --git a/src/frontends/common/SaveStateManager.cpp b/src/frontends/common/SaveStateManager.cpp
+index ea756ab..8854e3c 100644
+--- a/src/frontends/common/SaveStateManager.cpp
++++ b/src/frontends/common/SaveStateManager.cpp
+@@ -108,7 +108,7 @@ auto save_state_load() -> bool {
+   return true;
+ }
+ 
+-auto save_state_save() -> void {
++auto save_state_save() -> bool {
+   auto snapshot = std::unique_ptr<Snapshot>(new Snapshot());
+   snapshot_serialize(snapshot.get());
+ 
+@@ -119,7 +119,7 @@ auto save_state_save() -> void {
+   if (!file) {
+     Logger::error("Failed to open save state file for writing: %s\n",
+                   temp_filename.c_str());
+-    return;
++    return false;
+   }
+ 
+   const size_t bytes_written =
+@@ -133,16 +133,17 @@ auto save_state_save() -> void {
+         "Failed to write complete save state data to %s (wrote %zu of %zu "
+         "bytes)\n",
+         filename, bytes_written, sizeof(Snapshot));
+-    return;
++    return false;
+   }
+ 
+   if (std::rename(temp_filename.c_str(), filename) != 0) {
+     unlink(temp_filename.c_str());
+     Logger::error("Failed to commit save state file to: %s\n", filename);
+-    return;
++    return false;
+   }
+ 
+   Logger::info("Saved state to: %s\n", filename);
++  return true;
+ }
+ 
+ auto save_state_startup() -> void {
+diff --git a/src/frontends/common/SaveStateManager.h b/src/frontends/common/SaveStateManager.h
+index 1805465..e0064a2 100644
+--- a/src/frontends/common/SaveStateManager.h
++++ b/src/frontends/common/SaveStateManager.h
+@@ -7,7 +7,8 @@ auto save_state_get_filename() -> const char*;
+ auto save_state_set_filename(const char* filename) -> void;
+ 
+ auto save_state_load() -> bool;
+-auto save_state_save() -> void;
++// Returns true when the state was written and committed.
++auto save_state_save() -> bool;
+ 
+ auto save_state_startup() -> void;
+ auto save_state_shutdown() -> void;
+diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
+index a75d806..b1ae928 100644
+--- a/src/frontends/sdl1/Frame.cpp
++++ b/src/frontends/sdl1/Frame.cpp
+@@ -46,6 +46,7 @@
+ #include "frontends/sdl1/DiskChoose.h"
+ #include "frontends/sdl1/SDL_Asset.h"
+ #include "frontends/sdl1/SDL_Video.h"
++#include "frontends/sdl1/SnapshotGallery.h"
+ #include "frontends/sdl1/SdlPtr.h"
+ 
+ SDL_Surface* screen = nullptr;
+@@ -269,7 +270,7 @@ auto frame_refresh() -> void {
+ }
+ 
+ auto draw_frame_window() -> void {
+-  if (!frame_ready) {
++  if (!frame_ready && !osd_wants_repaint()) {
+     return;
+   }
+ 
+@@ -306,6 +307,9 @@ auto draw_frame_window() -> void {
+   }
+ 
+   SDL_BlitSurface(texture.get(), nullptr, screen, nullptr);
++  osd_draw(screen, window_resized
++                       ? new_rect
++                       : SDL_Rect{0, 0, SCREEN_WIDTH, SCREEN_HEIGHT});
+   frame_refresh();
+   video_set_frame_ready(false);
+ }
+@@ -582,16 +586,12 @@ auto frame_show_help_screen(int sx, int sy) -> void {
+   draw_frame_window();
+ }
+ 
++// Quick save writes the state and a screenshot of the moment to the slot.
+ auto frame_quick_state(int num, int mod) -> void {
+-  std::array<char, path_max_len> fpath{};
+-  snprintf(fpath.data(), fpath.size(), "%.*s/SaveState%d.aws",
+-           static_cast<int>(strlen(system_state.save_state_dir.data())),
+-           system_state.save_state_dir.data(), num);
+-  save_state_set_filename(fpath.data());
+   if ((mod & KMOD_SHIFT) != 0) {
+-    save_state_save();
++    gallery_quick_save(num);
+   } else {
+-    load_save_state();
++    gallery_quick_load(num);
+   }
+ }
+ 
+@@ -723,10 +723,20 @@ auto handle_btn_quit() -> void {
+   SDL_PushEvent(&qe);
+ }
+ 
++// F11: slot picker. Shift+F11: the file browser. Alt+F11: save to the
++// current snapshot file without asking.
+ auto handle_btn_save_state(int mod) -> void {
+-  if ((mod & KMOD_ALT) != 0 || psp_save_state_select_image(true)) {
++  if ((mod & KMOD_ALT) != 0) {
+     save_state_save();
++    return;
++  }
++  if ((mod & KMOD_SHIFT) != 0) {
++    if (psp_save_state_select_image(true)) {
++      save_state_save();
++    }
++    return;
+   }
++  gallery_open(true);
+ }
+ 
+ auto handle_btn_load_state(int mod) -> void {
+@@ -734,9 +744,17 @@ auto handle_btn_load_state(int mod) -> void {
+     linapple_reset_soft();
+     return;
+   }
+-  if ((mod & KMOD_ALT) != 0 || psp_save_state_select_image(false)) {
++  if ((mod & KMOD_ALT) != 0) {
+     load_save_state();
++    return;
++  }
++  if ((mod & KMOD_SHIFT) != 0) {
++    if (psp_save_state_select_image(false)) {
++      load_save_state();
++    }
++    return;
+   }
++  gallery_open(false);
+ }
+ 
+ }  // namespace
+diff --git a/src/frontends/sdl1/SnapshotGallery.cpp b/src/frontends/sdl1/SnapshotGallery.cpp
+new file mode 100644
+index 0000000..5b077f8
+--- /dev/null
++++ b/src/frontends/sdl1/SnapshotGallery.cpp
+@@ -0,0 +1,527 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Save slots with screenshots, an on-screen message, and a thumbnail picker.
++
++#include "frontends/sdl1/SnapshotGallery.h"
++
++#include <SDL/SDL.h>
++#include <SDL/SDL_events.h>
++#include <SDL/SDL_keysym.h>
++#include <SDL/SDL_timer.h>
++#include <SDL/SDL_video.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <array>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <ctime>
++#include <string>
++
++#include "apple2/Video.h"
++#include "core/LinAppleCore.h"
++#include "frontends/common/AudioMixer.h"
++#include "frontends/common/SaveStateManager.h"
++#include "frontends/common/VideoStretch.h"
++#include "frontends/common/sdl/MouseInput.h"
++#include "frontends/sdl1/Frame.h"
++#include "frontends/sdl1/SDL_Video.h"
++#include "frontends/sdl1/SdlPtr.h"
++
++namespace {
++
++constexpr Uint32 toast_duration_ms = 1600;
++
++std::array<char, 48> toast_text{};
++Uint32 toast_until = 0;
++bool toast_needs_clear = false;
++
++auto save_dir() -> std::string {
++  const char* dir = system_state.save_state_dir.data();
++  if (dir == nullptr || dir[0] == '\0') {
++    return ".";
++  }
++  std::string d = dir;
++  while (d.size() > 1 && d.back() == '/') {
++    d.pop_back();
++  }
++  return d;
++}
++
++auto file_mtime(const std::string& path, time_t* out) -> bool {
++  struct stat st {};
++  if (stat(path.c_str(), &st) != 0) {
++    return false;
++  }
++  *out = st.st_mtime;
++  return true;
++}
++
++// The emulated picture as the core last composed it: 560x384, 0x00RRGGBB.
++auto save_screenshot(const std::string& path) -> bool {
++  uint32_t* output = video_get_output_buffer();
++  if (output == nullptr) {
++    return false;
++  }
++  SdlSurfacePtr shot(SDL_CreateRGBSurfaceFrom(
++      output, SCREEN_WIDTH, SCREEN_HEIGHT, 32, SCREEN_WIDTH * 4, 0x00FF0000,
++      0x0000FF00, 0x000000FF, 0));
++  if (shot == nullptr) {
++    return false;
++  }
++  const std::string tmp = path + ".tmp";
++  if (SDL_SaveBMP(shot.get(), tmp.c_str()) != 0) {
++    unlink(tmp.c_str());
++    return false;
++  }
++  if (std::rename(tmp.c_str(), path.c_str()) != 0) {
++    unlink(tmp.c_str());
++    return false;
++  }
++  return true;
++}
++
++auto after_load() -> void {
++  if (!mouse_input_consumer_present()) {
++    mouse_input_release();
++  }
++  video_redraw_screen();
++  system_state.reset_timing = true;
++}
++
++// Index in the grid (0..9) to slot number, in keyboard order 1..9, 0.
++constexpr auto index_to_slot(int index) -> int { return (index + 1) % 10; }
++constexpr auto slot_to_index(int slot) -> int { return (slot + 9) % 10; }
++
++struct Thumb {
++  SdlSurfacePtr image;
++  bool used = false;
++  std::array<char, 24> label{};
++};
++
++auto load_thumb(int slot, const SDL_PixelFormat* fmt, Thumb* t) -> void {
++  t->image.reset();
++  t->used = gallery_slot_used(slot);
++  time_t mt = 0;
++  if (t->used && file_mtime(gallery_slot_path(slot, "aws"), &mt)) {
++    std::array<char, 16> when{};
++    struct tm tmv {};
++    localtime_r(&mt, &tmv);
++    strftime(when.data(), when.size(), "%m-%d %H:%M", &tmv);
++    snprintf(t->label.data(), t->label.size(), "%d  %s", slot, when.data());
++  } else {
++    snprintf(t->label.data(), t->label.size(), "%d  %s", slot,
++             t->used ? "" : "EMPTY");
++  }
++  if (!t->used) {
++    return;
++  }
++  SdlSurfacePtr bmp(SDL_LoadBMP(gallery_slot_path(slot, "bmp").c_str()));
++  if (bmp != nullptr) {
++    t->image.reset(SDL_ConvertSurface(bmp.get(),
++                                      const_cast<SDL_PixelFormat*>(fmt),
++                                      SDL_SWSURFACE));
++  }
++}
++
++struct Layout {
++  int w = 0;
++  int h = 0;
++  double k = 1.0;
++  int margin = 0;
++  int title_h = 0;
++  int cell_w = 0;
++  int thumb_h = 0;
++  int label_h = 0;
++  int grid_top = 0;
++  int footer_y = 0;
++  SDL_Rect preview{};
++  bool has_preview = false;
++};
++
++auto compute_layout(int w, int h) -> Layout {
++  Layout l;
++  l.w = w;
++  l.h = h;
++  l.k = std::max(1.0, std::min(static_cast<double>(w) / SCREEN_WIDTH,
++                               static_cast<double>(h) / SCREEN_HEIGHT));
++  l.margin = std::max(6, w / 40);
++  const int line = static_cast<int>(font_size_y * l.k);
++  l.title_h = line + (l.margin * 2);
++  l.cell_w = (w - (l.margin * 6)) / 5;
++  l.thumb_h = (l.cell_w * SCREEN_HEIGHT) / SCREEN_WIDTH;
++  l.label_h = line + (l.margin / 2) + 4;
++  l.grid_top = l.title_h;
++  l.footer_y = h - line - l.margin;
++
++  const int grid_bottom =
++      l.grid_top + (2 * (l.thumb_h + l.label_h + l.margin));
++  const int avail = l.footer_y - grid_bottom - l.margin;
++  if (avail >= 80) {
++    int ph = avail;
++    int pw = (ph * SCREEN_WIDTH) / SCREEN_HEIGHT;
++    if (pw > w - (2 * l.margin)) {
++      pw = w - (2 * l.margin);
++      ph = (pw * SCREEN_HEIGHT) / SCREEN_WIDTH;
++    }
++    l.preview = SDL_Rect{static_cast<Sint16>((w - pw) / 2),
++                         static_cast<Sint16>(grid_bottom),
++                         static_cast<Uint16>(pw), static_cast<Uint16>(ph)};
++    l.has_preview = true;
++  }
++  return l;
++}
++
++auto cell_rect(const Layout& l, int index) -> SDL_Rect {
++  const int col = index % 5;
++  const int row = index / 5;
++  const int x = l.margin + (col * (l.cell_w + l.margin));
++  const int y = l.grid_top + (row * (l.thumb_h + l.label_h + l.margin));
++  return SDL_Rect{static_cast<Sint16>(x), static_cast<Sint16>(y),
++                  static_cast<Uint16>(l.cell_w),
++                  static_cast<Uint16>(l.thumb_h)};
++}
++
++auto draw_image(SDL_Surface* dst, SDL_Surface* img, const SDL_Rect& r) -> void {
++  ScopedSurfaceLock lock_dst(dst);
++  ScopedSurfaceLock lock_img(img);
++  VideoRect d{r.x, r.y, r.w, r.h};
++  video_soft_stretch(lock_img.view(), nullptr, lock_dst.view(), &d);
++}
++
++auto frame_box(SDL_Surface* dst, const SDL_Rect& r, Uint32 color, int width)
++    -> void {
++  ScopedSurfaceLock lock(dst);
++  for (int i = 0; i < width; ++i) {
++    rectangle(lock.view(), r.x - 1 - i, r.y - 1 - i, r.w + 1 + (2 * i),
++              r.h + 1 + (2 * i), color);
++  }
++}
++
++auto draw_gallery(SDL_Surface* scr, const Layout& l,
++                  std::array<Thumb, gallery_slot_count>& thumbs, int selected,
++                  bool save_mode, bool erase_armed) -> void {
++  const Uint32 black = SDL_MapRGB(scr->format, 0, 0, 0);
++  const Uint32 panel = SDL_MapRGB(scr->format, 24, 24, 32);
++  const Uint32 grey = SDL_MapRGB(scr->format, 90, 90, 100);
++  const Uint32 hilite = save_mode ? SDL_MapRGB(scr->format, 255, 96, 64)
++                                  : SDL_MapRGB(scr->format, 255, 220, 0);
++
++  SDL_FillRect(scr, nullptr, black);
++
++  {
++    ScopedSurfaceLock lock(scr);
++    const char* title = save_mode ? "SAVE STATE - choose a slot"
++                                  : "LOAD STATE - choose a slot";
++    font_print_centered(l.w / 2, l.margin, title, lock.view(), l.k, l.k);
++    std::array<char, 64> footer{};
++    if (erase_armed) {
++      snprintf(footer.data(), footer.size(),
++               "Press Del again to erase slot %d", index_to_slot(selected));
++    } else {
++      snprintf(footer.data(), footer.size(), "%s",
++               "0-9/Arrows: select  Enter: OK  Del: erase  Esc: cancel");
++    }
++    font_print_centered(
++        l.w / 2, l.footer_y, footer.data(), lock.view(),
++        std::min(l.k, static_cast<double>(l.w) / (56.0 * font_size_x)),
++        l.k);
++  }
++
++  for (int i = 0; i < gallery_slot_count; ++i) {
++    Thumb& t = thumbs.at(static_cast<size_t>(i));
++    SDL_Rect r = cell_rect(l, i);
++    SDL_Rect fill = r;
++    SDL_FillRect(scr, &fill, panel);
++    if (t.image != nullptr) {
++      draw_image(scr, t.image.get(), r);
++    }
++    frame_box(scr, r, i == selected ? hilite : grey, i == selected ? 3 : 1);
++    ScopedSurfaceLock lock(scr);
++    const double lk = std::min(
++        l.k, static_cast<double>(l.cell_w) /
++                 (static_cast<double>(std::strlen(t.label.data()) + 1) *
++                  font_size_x));
++    font_print(r.x, r.y + r.h + (l.margin / 2) + 2, t.label.data(),
++               lock.view(), lk, l.k);
++  }
++
++  if (l.has_preview) {
++    const Thumb& t = thumbs.at(static_cast<size_t>(selected));
++    SDL_Rect p = l.preview;
++    SDL_FillRect(scr, &p, panel);
++    if (t.image != nullptr) {
++      draw_image(scr, t.image.get(), l.preview);
++    } else {
++      ScopedSurfaceLock lock(scr);
++      font_print_centered(l.preview.x + (l.preview.w / 2),
++                          l.preview.y + (l.preview.h / 2),
++                          t.used ? "(no screenshot)" : "EMPTY", lock.view(),
++                          l.k, l.k);
++    }
++    frame_box(scr, l.preview, grey, 1);
++  }
++
++  SDL_Flip(scr);
++}
++
++auto erase_slot(int slot) -> void {
++  unlink(gallery_slot_path(slot, "aws").c_str());
++  unlink(gallery_slot_path(slot, "bmp").c_str());
++}
++
++}  // namespace
++
++auto gallery_slot_path(int slot, const char* ext) -> std::string {
++  std::array<char, 32> name{};
++  snprintf(name.data(), name.size(), "SaveState%d.%s", slot, ext);
++  return save_dir() + "/" + name.data();
++}
++
++auto gallery_slot_used(int slot) -> bool {
++  return access(gallery_slot_path(slot, "aws").c_str(), R_OK) == 0;
++}
++
++auto gallery_quick_save(int slot) -> bool {
++  const std::string state = gallery_slot_path(slot, "aws");
++  save_state_set_filename(state.c_str());
++  std::array<char, 48> msg{};
++  if (!save_state_save()) {
++    snprintf(msg.data(), msg.size(), "SAVE %d FAILED", slot);
++    osd_toast(msg.data());
++    return false;
++  }
++  const bool shot = save_screenshot(gallery_slot_path(slot, "bmp"));
++  snprintf(msg.data(), msg.size(), shot ? "SAVED %d" : "SAVED %d (NO PICTURE)",
++           slot);
++  osd_toast(msg.data());
++  return true;
++}
++
++auto gallery_quick_load(int slot) -> bool {
++  std::array<char, 48> msg{};
++  if (!gallery_slot_used(slot)) {
++    snprintf(msg.data(), msg.size(), "SLOT %d IS EMPTY", slot);
++    osd_toast(msg.data());
++    return false;
++  }
++  save_state_set_filename(gallery_slot_path(slot, "aws").c_str());
++  const bool ok = save_state_load();
++  after_load();
++  snprintf(msg.data(), msg.size(), ok ? "LOADED %d" : "LOAD %d FAILED", slot);
++  osd_toast(msg.data());
++  return ok;
++}
++
++auto gallery_open(bool save_mode) -> void {
++  if (screen == nullptr) {
++    return;
++  }
++  if (font_sfc == nullptr && !fonts_initialization()) {
++    return;
++  }
++
++  audio_mixer_set_fade(fade_out);
++  const AppMode previous_mode = system_state.mode;
++  if (previous_mode == app_mode_running) {
++    system_state.mode = app_mode_paused;
++  }
++
++  std::array<Thumb, gallery_slot_count> thumbs{};
++  for (int i = 0; i < gallery_slot_count; ++i) {
++    load_thumb(index_to_slot(i), screen->format,
++               &thumbs.at(static_cast<size_t>(i)));
++  }
++
++  // Start on the newest save, or slot 1.
++  int selected = 0;
++  time_t newest = 0;
++  for (int i = 0; i < gallery_slot_count; ++i) {
++    time_t mt = 0;
++    if (file_mtime(gallery_slot_path(index_to_slot(i), "aws"), &mt) &&
++        mt > newest) {
++      newest = mt;
++      selected = i;
++    }
++  }
++  if (save_mode && newest != 0) {
++    // When saving, offer the first empty slot after the newest one.
++    for (int step = 1; step <= gallery_slot_count; ++step) {
++      const int i = (selected + step) % gallery_slot_count;
++      if (!thumbs.at(static_cast<size_t>(i)).used) {
++        selected = i;
++        break;
++      }
++    }
++  }
++
++  const Layout layout = compute_layout(screen->w, screen->h);
++  int erase_armed = -1;
++  draw_gallery(screen, layout, thumbs, selected, save_mode, false);
++
++  int chosen = -1;
++  bool done = false;
++  while (!done) {
++    SDL_Event event{};
++    if (SDL_WaitEvent(&event) == 0) {
++      break;
++    }
++    if (event.type == SDL_QUIT) {
++      SDL_PushEvent(&event);
++      system_state.mode = app_mode_exit;
++      done = true;
++      break;
++    }
++    if (event.type != SDL_KEYDOWN) {
++      continue;
++    }
++    const SDLKey key = event.key.keysym.sym;
++    const int armed_before = erase_armed;
++    erase_armed = -1;
++    if (key >= SDLK_0 && key <= SDLK_9) {
++      chosen = slot_to_index(key - SDLK_0);
++      done = true;
++    } else if (key >= SDLK_KP0 && key <= SDLK_KP9) {
++      chosen = slot_to_index(key - SDLK_KP0);
++      done = true;
++    }
++    switch (key) {
++      case SDLK_LEFT:
++        selected = (selected + gallery_slot_count - 1) % gallery_slot_count;
++        break;
++      case SDLK_RIGHT:
++        selected = (selected + 1) % gallery_slot_count;
++        break;
++      case SDLK_UP:
++      case SDLK_DOWN:
++        selected = (selected + 5) % gallery_slot_count;
++        break;
++      case SDLK_HOME:
++        selected = 0;
++        break;
++      case SDLK_END:
++        selected = gallery_slot_count - 1;
++        break;
++      case SDLK_RETURN:
++      case SDLK_KP_ENTER:
++      case SDLK_SPACE:
++        chosen = selected;
++        done = true;
++        break;
++      case SDLK_DELETE:
++      case SDLK_BACKSPACE: {
++        // Two presses: the first asks, the second erases.
++        Thumb& t = thumbs.at(static_cast<size_t>(selected));
++        if (!t.used) {
++          break;
++        }
++        if (armed_before == selected) {
++          erase_slot(index_to_slot(selected));
++          load_thumb(index_to_slot(selected), screen->format, &t);
++        } else {
++          erase_armed = selected;
++        }
++        break;
++      }
++      case SDLK_ESCAPE:
++      case SDLK_F10:
++      case SDLK_F11:
++        done = true;
++        break;
++      case SDLK_F12:
++        system_state.mode = app_mode_exit;
++        {
++          SDL_Event qe{};
++          qe.type = SDL_QUIT;
++          SDL_PushEvent(&qe);
++        }
++        done = true;
++        break;
++      default:
++        break;
++    }
++    if (!done) {
++      draw_gallery(screen, layout, thumbs, selected, save_mode,
++                   erase_armed == selected);
++    }
++  }
++
++  // Drop the key-up of whatever closed the picker.
++  SDL_Event drain{};
++  while (SDL_PollEvent(&drain) != 0) {
++    if (drain.type == SDL_QUIT) {
++      SDL_PushEvent(&drain);
++      system_state.mode = app_mode_exit;
++      break;
++    }
++  }
++
++  if (system_state.mode == app_mode_paused &&
++      previous_mode == app_mode_running) {
++    system_state.mode = app_mode_running;
++  }
++  SDL_FillRect(screen, nullptr, 0);
++
++  if (system_state.mode != app_mode_exit && chosen >= 0) {
++    if (save_mode) {
++      gallery_quick_save(index_to_slot(chosen));
++    } else {
++      gallery_quick_load(index_to_slot(chosen));
++    }
++  }
++
++  draw_status_area(draw_background | draw_leds);
++  video_redraw_screen();
++  video_set_frame_ready(true);
++  draw_frame_window();
++  system_state.reset_timing = true;
++  if (system_state.mode == app_mode_running) {
++    audio_mixer_set_fade(fade_in);
++  }
++}
++
++auto osd_toast(const char* text) -> void {
++  snprintf(toast_text.data(), toast_text.size(), "%s", text);
++  toast_until = SDL_GetTicks() + toast_duration_ms;
++  toast_needs_clear = true;
++  video_set_frame_ready(true);
++}
++
++auto osd_wants_repaint() -> bool {
++  if (!toast_needs_clear) {
++    return false;
++  }
++  if (SDL_GetTicks() >= toast_until) {
++    // One last repaint without the message.
++    toast_needs_clear = false;
++  }
++  return true;
++}
++
++auto osd_draw(SDL_Surface* target, const SDL_Rect& picture) -> void {
++  if (target == nullptr || toast_text[0] == '\0' ||
++      SDL_GetTicks() >= toast_until) {
++    return;
++  }
++  if (font_sfc == nullptr && !fonts_initialization()) {
++    return;
++  }
++  const double k = std::max(
++      1.0, std::min(static_cast<double>(picture.w) / SCREEN_WIDTH,
++                    static_cast<double>(picture.h) / SCREEN_HEIGHT)) *
++                   2.0;
++  const int pad = static_cast<int>(4 * k);
++  const int tw =
++      static_cast<int>(std::strlen(toast_text.data()) * font_size_x * k);
++  const int th = static_cast<int>(font_size_y * k);
++  SDL_Rect box{static_cast<Sint16>(picture.x + pad),
++               static_cast<Sint16>(picture.y + pad),
++               static_cast<Uint16>(tw + (2 * pad)),
++               static_cast<Uint16>(th + (2 * pad))};
++  SDL_FillRect(target, &box, SDL_MapRGB(target->format, 0, 0, 0));
++  ScopedSurfaceLock lock(target);
++  rectangle(lock.view(), box.x, box.y, box.w - 1, box.h - 1,
++            SDL_MapRGB(target->format, 255, 220, 0));
++  font_print(box.x + pad, box.y + pad, toast_text.data(), lock.view(), k, k);
++}
+diff --git a/src/frontends/sdl1/SnapshotGallery.h b/src/frontends/sdl1/SnapshotGallery.h
+new file mode 100644
+index 0000000..fff1019
+--- /dev/null
++++ b/src/frontends/sdl1/SnapshotGallery.h
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#pragma once
++
++#include <SDL/SDL_video.h>
++
++#include <string>
++
++// Ten numbered save slots (0-9). Each slot keeps the machine state
++// (SaveState<n>.aws, the same name the quick-save keys always used) and a
++// screenshot taken at the same moment (SaveState<n>.bmp) in the Save State
++// Directory.
++
++constexpr int gallery_slot_count = 10;
++
++auto gallery_slot_path(int slot, const char* ext) -> std::string;
++auto gallery_slot_used(int slot) -> bool;
++
++// Save the state and its screenshot to a slot; shows an on-screen message.
++auto gallery_quick_save(int slot) -> bool;
++// Load a slot; shows an on-screen message.
++auto gallery_quick_load(int slot) -> bool;
++
++// Full-screen picker with a thumbnail per slot. Blocks until the user
++// confirms or cancels.
++auto gallery_open(bool save_mode) -> void;
++
++// Short message drawn over the picture for a moment.
++auto osd_toast(const char* text) -> void;
++// Called after the picture is blitted, before the flip.
++auto osd_draw(SDL_Surface* target, const SDL_Rect& picture) -> void;
++// True while a message is showing, and once more after it ends so the
++// picture underneath is repainted.
++auto osd_wants_repaint() -> bool;
+-- 
+2.43.0
+

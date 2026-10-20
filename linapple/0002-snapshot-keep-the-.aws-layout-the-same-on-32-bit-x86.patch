@@ -1,0 +1,62 @@
+From 57c516ba10c0c35f02b4b971245bab162b5c4781 Mon Sep 17 00:00:00 2001
+From: James <james@localhost>
+Date: Mon, 19 Oct 2026 09:59:10 +0900
+Subject: [PATCH 2/4] snapshot: keep the .aws layout the same on 32-bit x86
+
+On i386 a uint64_t or double member is only 4-byte aligned inside a
+struct, so SsCpu6502, SsIoJoystick and SsIoSpeaker shrank and the
+'wire format frozen on disk' static_assert failed. Align those members
+to 8 so the layout, and the files, match x86_64 and ARM64.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WsL4gZNfD2isH3GzbRC1Jq
+---
+ src/apple2/SnapshotTypes.h               | 4 ++--
+ src/apple2/peripherals/speaker/Speaker.h | 6 +++---
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/apple2/SnapshotTypes.h b/src/apple2/SnapshotTypes.h
+index b8945d5..730e7a4 100644
+--- a/src/apple2/SnapshotTypes.h
++++ b/src/apple2/SnapshotTypes.h
+@@ -41,7 +41,7 @@ struct SsCpu6502 {
+   uint8_t p;
+   uint8_t s;
+   uint16_t pc;
+-  uint64_t cumulative_cycles;
++  alignas(8) uint64_t cumulative_cycles;
+ };
+ 
+ // The 32 bytes an AppleWin .aws spends on the serial card: layout only, kept
+@@ -64,7 +64,7 @@ static_assert(sizeof(SsIoComms) == 32,
+ // the game port lives in slot 0, which has no entry in the trailer and no
+ // frame that fits here, so its state has no home in this format.
+ struct SsIoJoystick {
+-  uint64_t joy_cntr_reset_cycle;
++  alignas(8) uint64_t joy_cntr_reset_cycle;
+ };
+ 
+ struct SsIoVideo {
+diff --git a/src/apple2/peripherals/speaker/Speaker.h b/src/apple2/peripherals/speaker/Speaker.h
+index 415e47f..af31d4e 100644
+--- a/src/apple2/peripherals/speaker/Speaker.h
++++ b/src/apple2/peripherals/speaker/Speaker.h
+@@ -7,12 +7,12 @@
+ struct Peripheral;
+ 
+ struct SsIoSpeaker {
+-  uint64_t spkr_last_cycle =
++  alignas(8) uint64_t spkr_last_cycle =
+       0;  // Legacy AppleWin field; scheduled for removal
+-  uint64_t quiet_cycle_count = 0;
++  alignas(8) uint64_t quiet_cycle_count = 0;
+   uint32_t recently_active = 0;
+   uint32_t state = 0;
+-  double next_sample_cycle = 0.0;
++  alignas(8) double next_sample_cycle = 0.0;
+   uint32_t last_sample_state = 0;
+   float filter_state = 0.0F;
+ };
+-- 
+2.43.0
+
