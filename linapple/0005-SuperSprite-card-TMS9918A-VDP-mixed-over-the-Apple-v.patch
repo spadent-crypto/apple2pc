@@ -1,4 +1,4 @@
-From 8fd951a166dd7ced64ada2acc25dcde238e1cca9 Mon Sep 17 00:00:00 2001
+From 833b03819a4376752faef25009d9de8b26b329bf Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Sat, 24 Oct 2026 10:32:29 +0900
 Subject: [PATCH] SuperSprite card: TMS9918A VDP mixed over the Apple video,
@@ -32,10 +32,10 @@ Claude-Session: https://claude.ai/code/session_01D6xDKywCB3wTsvh9urrhRo
  src/apple2/peripherals/Peripheral.h           |  12 +
  .../peripherals/supersprite/SuperSprite.cpp   | 587 ++++++++++++++++++
  .../peripherals/supersprite/SuperSprite.h     |  14 +
- tests/test_peripheral_abi.cpp                 |   7 +-
+ tests/test_peripheral_abi.cpp                 |  11 +-
  tests/test_peripheral_abi_c.c                 |   9 +-
  tests/test_supersprite.cpp                    | 493 +++++++++++++++
- 12 files changed, 1529 insertions(+), 4 deletions(-)
+ 12 files changed, 1532 insertions(+), 5 deletions(-)
  create mode 100644 src/apple2/chips/TMS9918A.cpp
  create mode 100644 src/apple2/chips/TMS9918A.h
  create mode 100644 src/apple2/peripherals/supersprite/SuperSprite.cpp
@@ -1182,7 +1182,7 @@ index 0000000..4912c79
 +}
 +#endif
 diff --git a/tests/test_peripheral_abi.cpp b/tests/test_peripheral_abi.cpp
-index f635d51..66dff4a 100644
+index f635d51..6bdbabc 100644
 --- a/tests/test_peripheral_abi.cpp
 +++ b/tests/test_peripheral_abi.cpp
 @@ -265,8 +265,11 @@ static_assert(offsetof(HostInterface, GetMachine) == 30 * host_member_size,
@@ -1199,6 +1199,17 @@ index f635d51..66dff4a 100644
  static_assert(peripheral_machine_apple2 == 0 &&
                    peripheral_machine_apple2_plus == 1 &&
                    peripheral_machine_apple2e == 2,
+@@ -379,7 +382,9 @@ TEST_CASE(
+         offsetof(HostInterface, GetLocalTime) + host_member_size);
+   CHECK(offsetof(HostInterface, SinkRead) ==
+         offsetof(HostInterface, SinkClose) + host_member_size);
+-  CHECK(offsetof(HostInterface, GetFrameCycles) + host_member_size ==
++  CHECK(offsetof(HostInterface, SetVideoOverlay) ==
++        offsetof(HostInterface, GetFrameCycles) + host_member_size);
++  CHECK(offsetof(HostInterface, SetVideoOverlay) + host_member_size ==
+         sizeof(HostInterface));
+ 
+   peripheral_manager_init();
 diff --git a/tests/test_peripheral_abi_c.c b/tests/test_peripheral_abi_c.c
 index d983f10..628c48e 100644
 --- a/tests/test_peripheral_abi_c.c
