@@ -33,6 +33,7 @@
 - AY-3-8912: $C0nC/D 데이터 쓰기, $C0nE/F 레지스터 선택·읽기. Mockingboard의 AY 코어 재사용, 모노
 - Echo II(TMS5220) 음성은 미구현: $C0n2 상태는 항상 대기(0x7F)
 - 세이브 스테이트에 VRAM·레지스터·AY·스위치 포함
+- 데모: `related/supersprite-demo/` (6502 데모 `ssdemo.apl`, 브라우저판 빌드 방법). 데스크톱 SDL1 LinApple과 브라우저판에서 실행 확인 (합성·스위치·효과음)
 - 레지스터 맵 출처: MAME `src/devices/bus/a2bus/ssprite.cpp` (매뉴얼 33쪽 기준)
 - 테스트: `tests/test_supersprite.cpp` (칩 단위 + 슬롯 7 합성·AY·세이브). 헤드리스 빌드 전체 ctest 118개 중 117개 통과. 실패 1개(`test-peripheral-dependency-rule`)는 패치 3의 SmartPort 카드가 harddisk 헤더를 include해서 생기는 기존 문제
 

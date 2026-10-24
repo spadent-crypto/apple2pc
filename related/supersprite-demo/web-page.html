@@ -1,0 +1,283 @@
+<title>SuperSprite 데모</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+KR:wght@400;600&display=swap">
+<style>
+/* Layout: one column under a monitor bezel; the screen first, the keys right under it, the card's I/O map last. */
+:root {
+  --bg: #121512;
+  --panel: #1b201c;
+  --line: #2c352e;
+  --fg: #d7e2d6;
+  --muted: #8a9a8b;
+  --phosphor: #7cf09a;
+  --key: #262d27;
+  --key-down: #3a4a3c;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.wrap {
+  max-width: 880px;
+  margin: 0 auto;
+  padding-block: 20px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid;
+  gap: 20px;
+}
+header { display: grid; gap: 4px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--phosphor);
+}
+h1 { margin: 0; font-size: 26px; font-weight: 600; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); max-width: 62ch; }
+
+.monitor {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+.screen {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 560 / 384;
+  background: #000;
+  border-radius: 6px;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  color: var(--phosphor);
+  font-size: 14px;
+}
+.status[hidden] { display: none; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+.key {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--key);
+  border: 1px solid var(--line);
+  border-bottom-width: 3px;
+  border-radius: 8px;
+  padding: 10px 14px;
+  min-height: 48px;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.key b { font-weight: 600; }
+.key span { font-family: var(--font-body); font-size: 12px; color: var(--muted); }
+.key.down, .key:active { background: var(--key-down); border-bottom-width: 1px; transform: translateY(2px); }
+.key:focus-visible { outline: 2px solid var(--phosphor); outline-offset: 2px; }
+.key.space { flex: 1 1 200px; }
+.key.sound { margin-left: auto; border-color: var(--phosphor); }
+.key.sound[aria-pressed="true"] { color: var(--phosphor); }
+.hint { margin: 0; color: var(--muted); font-size: 13px; }
+
+section { display: grid; gap: 10px; }
+h2 { margin: 0; font-size: 17px; font-weight: 600; }
+p { margin: 0; max-width: 65ch; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 400; }
+td.addr { font-family: var(--font-mono); color: var(--phosphor); white-space: nowrap; font-variant-numeric: tabular-nums; }
+ul.notes { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--muted); max-width: 65ch; }
+@media (prefers-reduced-motion: reduce) { .key.down, .key:active { transform: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">LinApple · Slot 7 · Synetix SuperSprite</div>
+    <h1>SuperSprite 데모</h1>
+    <p class="lede">애플2 PC 이미지에 들어갈 LinApple 코어를 그대로 브라우저용으로 빌드했어요. 공 8개는 TMS9918A 스프라이트이고, 그 아래 글자는 애플 //e의 텍스트 화면입니다.</p>
+  </header>
+
+  <div class="monitor">
+    <div class="screen">
+      <canvas id="screen" width="560" height="384" tabindex="0" aria-label="Apple //e 화면"></canvas>
+      <div class="status" id="status">에뮬레이터 불러오는 중…</div>
+    </div>
+    <div class="controls" role="group" aria-label="데모 키">
+      <button class="key space" id="k-space" data-code="32" type="button"><b>SPACE</b><span>애플 영상 입력 켜기/끄기</span></button>
+      <button class="key" id="k-m" data-code="77" type="button"><b>M</b><span>합성 / 애플만</span></button>
+      <button class="key" id="k-s" data-code="83" type="button"><b>S</b><span>효과음 켜기/끄기</span></button>
+      <button class="key sound" id="k-audio" type="button" aria-pressed="false"><b>♪ 소리 켜기</b><span>브라우저 소리 출력</span></button>
+    </div>
+    <p class="hint">키보드가 있으면 화면을 한 번 누른 뒤 스페이스·M·S를 직접 눌러도 돼요. 소리는 브라우저 정책상 버튼을 눌러야 나옵니다.</p>
+  </div>
+
+  <section>
+    <h2>화면에서 확인할 것</h2>
+    <ul class="notes">
+      <li>SPACE를 누르면 애플 영상 입력이 꺼져 VDP의 투명한 부분이 검게 바뀌어요. 공과 위아래 무지개 띠만 남습니다.</li>
+      <li>M을 누르면 VDP 화면이 빠지고 애플 화면만 나와요. 다시 누르면 합성으로 돌아옵니다.</li>
+      <li>공이 벽에 부딪칠 때마다 AY-3-8912가 공 번호마다 다른 음높이로 짧게 울려요.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>카드 I/O 주소 (슬롯 7)</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>주소</th><th>기능</th></tr></thead>
+        <tbody>
+          <tr><td class="addr">$C0F0</td><td>VDP VRAM 읽기·쓰기 (주소 자동 증가)</td></tr>
+          <tr><td class="addr">$C0F1</td><td>VDP 상태 읽기 / 주소·레지스터 쓰기</td></tr>
+          <tr><td class="addr">$C0F2</td><td>Echo II 음성 (미구현, 항상 대기 상태)</td></tr>
+          <tr><td class="addr">$C0F3 · $C0F4</td><td>애플 영상 입력 끔 · 켬</td></tr>
+          <tr><td class="addr">$C0F5 · $C0F6</td><td>애플 화면만 · VDP 합성 출력</td></tr>
+          <tr><td class="addr">$C0FC · $C0FD</td><td>AY 데이터 쓰기</td></tr>
+          <tr><td class="addr">$C0FE · $C0FF</td><td>AY 레지스터 선택 / 데이터 읽기</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">데모는 6502 어셈블리 1KB짜리로, VDP 프레임 플래그($C0F1 비트 7)를 기다려 초당 60번 스프라이트를 옮깁니다. 이 웹판에는 디스크 카드가 빠져 있어요.</p>
+  </section>
+</div>
+
+<script>
+var Module = {
+  canvas: null,
+  print: function () {},
+  printErr: function () {},
+  onRuntimeInitialized: function () {
+    document.getElementById("status").hidden = true;
+  }
+};
+(function () {
+  var canvas = document.getElementById("screen");
+  var ctx = canvas.getContext("2d");
+  var image = ctx.createImageData(560, 384);
+  var out = new Uint32Array(image.data.buffer);
+  Module.drawFrame = function (ptr, w, h, pitch) {
+    if (w !== 560 || h !== 384) return;
+    if (!Module.firstFrameShown) { Module.firstFrameShown = true; document.getElementById("status").hidden = true; }
+    var src = new Uint32Array(Module.HEAPU8.buffer, ptr, w * h);
+    for (var i = 0; i < w * h; i++) {
+      var p = src[i];
+      // 0x00RRGGBB in, little-endian RGBA bytes out.
+      out[i] = 0xFF000000 | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF);
+    }
+    ctx.putImageData(image, 0, 0);
+  };
+
+  function key(code, down) {
+    if (Module._web_key) Module._web_key(code, down ? 1 : 0);
+  }
+
+  // On-screen keys: held while the finger or mouse button is down.
+  document.querySelectorAll(".key[data-code]").forEach(function (btn) {
+    var code = parseInt(btn.dataset.code, 10);
+    var release = function () { btn.classList.remove("down"); key(code, false); };
+    btn.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      btn.classList.add("down");
+      key(code, true);
+      setTimeout(release, 120);
+    });
+    btn.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { key(code, true); setTimeout(function () { key(code, false); }, 80); e.preventDefault(); }
+    });
+  });
+
+  var named = { Enter: 13, Escape: 27, Backspace: 8, Tab: 9, ArrowLeft: 8, ArrowRight: 21, ArrowUp: 11, ArrowDown: 10 };
+  function codeFor(e) {
+    if (named[e.key] !== undefined) return named[e.key];
+    if (e.key.length === 1) {
+      var c = e.key.charCodeAt(0);
+      if (c >= 97 && c <= 122) c -= 32;
+      if (c < 128) return c;
+    }
+    return -1;
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.target.closest && e.target.closest("button")) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var c = codeFor(e);
+    if (c < 0) return;
+    e.preventDefault();
+    key(c, true);
+  });
+  document.addEventListener("keyup", function (e) {
+    var c = codeFor(e);
+    if (c >= 0) key(c, false);
+  });
+  canvas.addEventListener("pointerdown", function () { canvas.focus(); });
+
+  // Sound: Web Audio pulls 48 kHz stereo from the emulator's mixer.
+  var audioBtn = document.getElementById("k-audio");
+  var actx = null, node = null, buf = 0, frames = 2048;
+  audioBtn.addEventListener("click", function () {
+    if (!Module._web_audio_fill) return;
+    if (!actx) {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        actx = new AC({ sampleRate: 48000 });
+      } catch (err) {
+        audioBtn.querySelector("span").textContent = "이 브라우저는 소리를 낼 수 없어요";
+        return;
+      }
+      buf = Module._malloc(frames * 4);
+      node = actx.createScriptProcessor(frames, 0, 2);
+      node.onaudioprocess = function (ev) {
+        var n = ev.outputBuffer.length;
+        Module._web_audio_fill(buf, n);
+        var pcm = new Int16Array(Module.HEAPU8.buffer, buf, n * 2);
+        var l = ev.outputBuffer.getChannelData(0), r = ev.outputBuffer.getChannelData(1);
+        for (var i = 0; i < n; i++) { l[i] = pcm[2 * i] / 32768; r[i] = pcm[2 * i + 1] / 32768; }
+      };
+      node.connect(actx.destination);
+      audioBtn.setAttribute("aria-pressed", "true");
+      audioBtn.querySelector("b").textContent = "♪ 소리 끄기";
+      return;
+    }
+    if (actx.state === "running") {
+      actx.suspend();
+      audioBtn.setAttribute("aria-pressed", "false");
+      audioBtn.querySelector("b").textContent = "♪ 소리 켜기";
+    } else {
+      actx.resume();
+      audioBtn.setAttribute("aria-pressed", "true");
+      audioBtn.querySelector("b").textContent = "♪ 소리 끄기";
+    }
+  });
+})();
+</script>
+<script>
+/*LINAPPLE_JS*/
+</script>
