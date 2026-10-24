@@ -21,6 +21,8 @@ linapple.conf     에뮬레이터 설정 (기종, 속도, 슬롯 구성 등)
 슬롯 4  Mockingboard
 FujiNet 없이 로컬 디스크로 바로 부팅하려면 linapple.conf에서
 "Slot 7 = FujiNet"을 "Slot 7 = None"으로 바꾸세요.
+SuperSprite(Synetix 스프라이트 카드) 소프트웨어를 쓰려면 슬롯 7에
+"Slot 7 = SuperSprite"를 넣으세요. 그동안 FujiNet은 꺼집니다.
 
 키
 ---

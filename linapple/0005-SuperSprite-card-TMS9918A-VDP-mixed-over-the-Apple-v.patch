@@ -1,0 +1,1723 @@
+From 8fd951a166dd7ced64ada2acc25dcde238e1cca9 Mon Sep 17 00:00:00 2001
+From: James <james@localhost>
+Date: Sat, 24 Oct 2026 10:32:29 +0900
+Subject: [PATCH] SuperSprite card: TMS9918A VDP mixed over the Apple video,
+ AY-3-8912
+
+A Synetix SuperSprite for any slot (its software expects slot 7):
+'Slot 7 = SuperSprite'. Register map from the owner's manual as MAME's
+ssprite device has it: VDP at $C0n0/$C0n1, video switches at $C0n3-6,
+AY data at $C0nC/D and register select/read at $C0nE/F. The Echo II
+TMS5220 is not emulated; its status port reads idle.
+
+- src/apple2/chips/TMS9918A: Graphics I/II, multicolor and text modes,
+  32 sprites with 8x8/16x16, magnification, early clock, four per line
+  with the fifth-sprite flag, collision, frame interrupt through R1.
+- The frame is drawn at each vblank and scaled over the 560x384 Apple
+  frame; colour 0 shows the Apple picture (Apple video in on) or black.
+- HostInterface gains SetVideoOverlay (appended last), served by a new
+  video_set_overlay hook in Video.cpp, called with the frame locked.
+- Save states carry VRAM, registers, AY state and the switches.
+- tests/test_supersprite.cpp: chip and card tests.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01D6xDKywCB3wTsvh9urrhRo
+---
+ CMakeLists.txt                                |   5 +
+ src/apple2/Video.cpp                          |  14 +
+ src/apple2/Video.h                            |   6 +
+ src/apple2/chips/TMS9918A.cpp                 | 318 ++++++++++
+ src/apple2/chips/TMS9918A.h                   |  61 ++
+ src/apple2/peripherals/Peripheral.cpp         |   7 +
+ src/apple2/peripherals/Peripheral.h           |  12 +
+ .../peripherals/supersprite/SuperSprite.cpp   | 587 ++++++++++++++++++
+ .../peripherals/supersprite/SuperSprite.h     |  14 +
+ tests/test_peripheral_abi.cpp                 |   7 +-
+ tests/test_peripheral_abi_c.c                 |   9 +-
+ tests/test_supersprite.cpp                    | 493 +++++++++++++++
+ 12 files changed, 1529 insertions(+), 4 deletions(-)
+ create mode 100644 src/apple2/chips/TMS9918A.cpp
+ create mode 100644 src/apple2/chips/TMS9918A.h
+ create mode 100644 src/apple2/peripherals/supersprite/SuperSprite.cpp
+ create mode 100644 src/apple2/peripherals/supersprite/SuperSprite.h
+ create mode 100644 tests/test_supersprite.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5cc3579..12d2e41 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -669,7 +669,9 @@ add_peripheral(joystick "game I/O port (paddles, buttons and the //e Apple-key s
+ add_peripheral(printer "Parallel Printer" "src/apple2/peripherals/printer/Printer.cpp" "" "" FALSE)
+ add_peripheral(clock "Clock Card" "src/apple2/peripherals/clock/ClockCard.cpp" "" "" FALSE)
+ add_peripheral(smartport "SmartPort and FujiNet cards" "src/apple2/peripherals/smartport/SmartPortCard.cpp;src/apple2/peripherals/smartport/LocalDisks.cpp;src/apple2/peripherals/smartport/FujiNetLink.cpp" "Threads::Threads" "image-container" FALSE)
++add_peripheral(supersprite "Synetix SuperSprite" "src/apple2/peripherals/supersprite/SuperSprite.cpp;src/apple2/chips/TMS9918A.cpp;src/apple2/chips/AY8910.cpp" "" "" FALSE)
+ finalize_peripheral_libraries()
++list(REMOVE_DUPLICATES SOURCES_A2_OPTIONAL)
+ 
+ # The chips have no target of their own: the core list and the Mockingboard
+ # compile them straight into whichever executable or plugin needs them, so
+@@ -967,6 +969,9 @@ fi
+         add_linapple_test(mockingboard-e2e "tests/test_main.cpp;tests/test_mockingboard_e2e.cpp")
+         set_tests_properties(test-mockingboard-e2e PROPERTIES LABELS "e2e")
+     endif()
++    if(ENABLE_PERIPHERAL_SUPERSPRITE)
++        add_linapple_test(supersprite "tests/test_main.cpp;tests/test_supersprite.cpp")
++    endif()
+     if(ENABLE_PERIPHERAL_JOYSTICK)
+         set_source_files_properties(tests/test_joystick_abi_c.c PROPERTIES COMPILE_OPTIONS "-std=c99;-pedantic")
+         add_linapple_test(joystick-peripheral "tests/test_main.cpp;tests/HeadlessHarness.cpp;tests/test_joystick_peripheral.cpp;tests/test_joystick_abi_c.c")
+diff --git a/src/apple2/Video.cpp b/src/apple2/Video.cpp
+index 4fedb69..66b73e3 100644
+--- a/src/apple2/Video.cpp
++++ b/src/apple2/Video.cpp
+@@ -44,6 +44,15 @@ static bool language_rocker_switch = false;
+ 
+ auto video_get_output_buffer() -> uint32_t* { return video_output; }
+ 
++static VideoOverlayFn video_overlay_fn = nullptr;
++static void* video_overlay_ctx = nullptr;
++
++auto video_set_overlay(VideoOverlayFn fn, void* ctx) -> void {
++  const std::lock_guard<std::recursive_mutex> lock(video_draw_mutex);
++  video_overlay_fn = fn;
++  video_overlay_ctx = ctx;
++}
++
+ auto video_set_rocker_switch(bool local) -> void {
+   language_rocker_switch = local;
+ }
+@@ -1720,6 +1729,11 @@ static auto video_update_output_buffer() -> void {
+   // Convert internal INDEX8 bitmap to RGB32 output buffer
+   video_soft_stretch(device_bitmap, &s, &dst, &s);
+ 
++  if (video_overlay_fn != nullptr) {
++    video_overlay_fn(video_overlay_ctx, video_output, SCREEN_WIDTH,
++                     SCREEN_HEIGHT, SCREEN_WIDTH);
++  }
++
+   // If status panel is visible, overlay it
+   if (status_cycle > 0 && show_leds && status_surface) {
+     VideoRect ss = {0, 0, STATUS_PANEL_W, STATUS_PANEL_H};
+diff --git a/src/apple2/Video.h b/src/apple2/Video.h
+index 219f1e4..1be8e33 100644
+--- a/src/apple2/Video.h
++++ b/src/apple2/Video.h
+@@ -168,6 +168,12 @@ extern VideoSurface* device_bitmap;
+ extern VideoSurface* origscreen;
+ 
+ auto video_get_output_buffer() -> uint32_t*;
++// A card's picture drawn over each finished frame (see PeripheralVideoOverlay
++// in Peripheral.h); nullptr removes it. Taken under video_draw_mutex, so once
++// this returns the old overlay is never called again.
++using VideoOverlayFn = void (*)(void* ctx, uint32_t* pixels, int width,
++                                int height, int pitch);
++auto video_set_overlay(VideoOverlayFn fn, void* ctx) -> void;
+ auto video_get_output_palette() -> VideoColor*;
+ inline auto video_is_frame_ready() noexcept -> bool {
+   return frame_ready.load();
+diff --git a/src/apple2/chips/TMS9918A.cpp b/src/apple2/chips/TMS9918A.cpp
+new file mode 100644
+index 0000000..59da8f4
+--- /dev/null
++++ b/src/apple2/chips/TMS9918A.cpp
+@@ -0,0 +1,318 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include "apple2/chips/TMS9918A.h"
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++namespace {
++
++constexpr uint16_t address_mask = tms9918a_vram_size - 1;
++
++// Register bits.
++constexpr uint8_t r0_m3 = 0x02;
++constexpr uint8_t r1_blank = 0x40;  // 1 = display enabled
++constexpr uint8_t r1_ie = 0x20;
++constexpr uint8_t r1_m1 = 0x10;
++constexpr uint8_t r1_m2 = 0x08;
++constexpr uint8_t r1_size = 0x02;
++constexpr uint8_t r1_mag = 0x01;
++
++constexpr uint8_t sprite_terminator = 0xD0;
++constexpr int sprites_per_line = 4;
++constexpr int num_sprites = 32;
++constexpr uint8_t early_clock = 0x80;
++
++constexpr int text_columns = 40;
++constexpr int text_left_border = 8;
++
++// The rendering MAME, openMSX and most emulators settled on, measured from a
++// TMS9928A's YPbPr output. Index 0 is transparent and never drawn.
++constexpr std::array<uint32_t, 16> palette = {
++    0x000000, 0x000000, 0x21C842, 0x5EDC78, 0x5455ED, 0x7D76FC,
++    0xD4524D, 0x42EBF5, 0xFC5554, 0xFF7978, 0xD4C154, 0xE6CE80,
++    0x21B03B, 0xC95BBA, 0xCCCCCC, 0xFFFFFF,
++};
++
++auto vram_at(const Tms9918a* vdp, uint32_t addr) -> uint8_t {
++  return vdp->vram[addr & address_mask];
++}
++
++// One scan line of the pattern plane, colour 0 where the plane is
++// transparent.
++auto draw_background(const Tms9918a* vdp, int y, uint8_t* line) -> void {
++  const auto& r = vdp->regs;
++  const uint32_t name_base = static_cast<uint32_t>(r[2] & 0x0F) << 10;
++  const int row = y >> 3;
++  const int sub = y & 7;
++
++  if ((r[1] & r1_m1) != 0) {
++    // Text: 40 columns of 6-pixel characters, two colours from R7, an
++    // 8-pixel border of backdrop on either side.
++    const uint32_t pattern_base = static_cast<uint32_t>(r[4] & 0x07) << 11;
++    const uint8_t fg = r[7] >> 4;
++    const uint8_t bg = r[7] & 0x0F;
++    std::memset(line, 0, tms9918a_width);
++    for (int col = 0; col < text_columns; ++col) {
++      const uint8_t name = vram_at(
++          vdp, name_base + static_cast<uint32_t>((row * text_columns) + col));
++      const uint8_t bits =
++          vram_at(vdp, pattern_base + (static_cast<uint32_t>(name) << 3) +
++                           static_cast<uint32_t>(sub));
++      for (int px = 0; px < 6; ++px) {
++        const bool on = (bits & (0x80 >> px)) != 0;
++        line[text_left_border + (col * 6) + px] = on ? fg : bg;
++      }
++    }
++    return;
++  }
++
++  if ((r[1] & r1_m2) != 0) {
++    // Multicolor: each name selects two 4x4 blocks per byte, and the byte
++    // within the pattern is picked by the character row.
++    const uint32_t pattern_base = static_cast<uint32_t>(r[4] & 0x07) << 11;
++    for (int col = 0; col < 32; ++col) {
++      const uint8_t name =
++          vram_at(vdp, name_base + static_cast<uint32_t>((row * 32) + col));
++      const uint32_t addr = pattern_base + (static_cast<uint32_t>(name) << 3) +
++                            static_cast<uint32_t>(((row & 3) * 2) + ((y >> 2) & 1));
++      const uint8_t colors = vram_at(vdp, addr);
++      const uint8_t left = colors >> 4;
++      const uint8_t right = colors & 0x0F;
++      for (int px = 0; px < 8; ++px) {
++        line[(col * 8) + px] = (px < 4) ? left : right;
++      }
++    }
++    return;
++  }
++
++  const bool graphics2 = (r[0] & r0_m3) != 0;
++  uint32_t pattern_base = 0;
++  uint32_t color_base = 0;
++  uint32_t pattern_mask = 0;
++  uint32_t color_mask = 0;
++  if (graphics2) {
++    pattern_base = static_cast<uint32_t>(r[4] & 0x04) << 11;
++    pattern_mask = (static_cast<uint32_t>(r[4] & 0x03) << 8) | 0xFF;
++    color_base = static_cast<uint32_t>(r[3] & 0x80) << 6;
++    color_mask = (static_cast<uint32_t>(r[3] & 0x7F) << 3) | 0x07;
++  } else {
++    pattern_base = static_cast<uint32_t>(r[4] & 0x07) << 11;
++    color_base = static_cast<uint32_t>(r[3]) << 6;
++  }
++
++  for (int col = 0; col < 32; ++col) {
++    const uint8_t name =
++        vram_at(vdp, name_base + static_cast<uint32_t>((row * 32) + col));
++    uint8_t bits = 0;
++    uint8_t colors = 0;
++    if (graphics2) {
++      // The screen's three thirds each address their own 256 patterns,
++      // narrowed by the masks in R3 and R4.
++      const uint32_t tile = (static_cast<uint32_t>(row >> 3) << 8) | name;
++      bits = vram_at(vdp, pattern_base + ((tile & pattern_mask) << 3) +
++                              static_cast<uint32_t>(sub));
++      colors = vram_at(vdp, color_base + ((tile & color_mask) << 3) +
++                                static_cast<uint32_t>(sub));
++    } else {
++      bits = vram_at(vdp, pattern_base + (static_cast<uint32_t>(name) << 3) +
++                              static_cast<uint32_t>(sub));
++      colors = vram_at(vdp, color_base + (name >> 3));
++    }
++    const uint8_t fg = colors >> 4;
++    const uint8_t bg = colors & 0x0F;
++    for (int px = 0; px < 8; ++px) {
++      line[(col * 8) + px] = ((bits & (0x80 >> px)) != 0) ? fg : bg;
++    }
++  }
++}
++
++auto sprite_top(uint8_t y) -> int {
++  // The line after the one in the attribute; values past the terminator
++  // count as negative so a sprite can slide in from the top.
++  const int signed_y = (y > sprite_terminator) ? static_cast<int>(y) - 256
++                                               : static_cast<int>(y);
++  return signed_y + 1;
++}
++
++auto draw_sprites(Tms9918a* vdp, int y, uint8_t* line) -> void {
++  const auto& r = vdp->regs;
++  const uint32_t attr_base = static_cast<uint32_t>(r[5] & 0x7F) << 7;
++  const uint32_t pattern_base = static_cast<uint32_t>(r[6] & 0x07) << 11;
++  const bool big = (r[1] & r1_size) != 0;
++  const int mag = ((r[1] & r1_mag) != 0) ? 1 : 0;
++  const int size = big ? 16 : 8;
++  const int height = size << mag;
++
++  std::array<int, sprites_per_line> visible = {};
++  int count = 0;
++  int last = 0;
++  for (int s = 0; s < num_sprites; ++s) {
++    last = s;
++    const uint32_t a = attr_base + static_cast<uint32_t>(s * 4);
++    const uint8_t sy = vram_at(vdp, a);
++    if (sy == sprite_terminator) {
++      break;
++    }
++    const int top = sprite_top(sy);
++    if (y < top || y >= top + height) {
++      continue;
++    }
++    if (count == sprites_per_line) {
++      if ((vdp->status & tms9918a_status::fifth) == 0) {
++        vdp->status = static_cast<uint8_t>(
++            (vdp->status & ~tms9918a_status::number_mask) |
++            tms9918a_status::fifth | static_cast<uint8_t>(s));
++      }
++      last = -1;
++      break;
++    }
++    visible[static_cast<size_t>(count++)] = s;
++  }
++  if (last >= 0 && (vdp->status & tms9918a_status::fifth) == 0) {
++    vdp->status = static_cast<uint8_t>(
++        (vdp->status & ~tms9918a_status::number_mask) |
++        static_cast<uint8_t>(last));
++  }
++
++  std::array<bool, tms9918a_width> occupied = {};
++  // Sprite 0 has the highest priority, so the list is walked in order and a
++  // pixel already drawn by a lower-numbered sprite is kept.
++  std::array<bool, tms9918a_width> drawn = {};
++  for (int i = 0; i < count; ++i) {
++    const int s = visible[static_cast<size_t>(i)];
++    const uint32_t a = attr_base + static_cast<uint32_t>(s * 4);
++    const int top = sprite_top(vram_at(vdp, a));
++    int x = vram_at(vdp, a + 1);
++    uint8_t name = vram_at(vdp, a + 2);
++    const uint8_t attr = vram_at(vdp, a + 3);
++    const uint8_t color = attr & 0x0F;
++    if ((attr & early_clock) != 0) {
++      x -= 32;
++    }
++    if (big) {
++      name &= 0xFC;
++    }
++    const int row = (y - top) >> mag;
++    const uint32_t base = pattern_base + (static_cast<uint32_t>(name) << 3) +
++                          static_cast<uint32_t>(row);
++    const uint8_t left = vram_at(vdp, base);
++    const uint8_t right = big ? vram_at(vdp, base + 16) : 0;
++    for (int px = 0; px < size; ++px) {
++      const uint8_t bits = (px < 8) ? left : right;
++      if ((bits & (0x80 >> (px & 7))) == 0) {
++        continue;
++      }
++      for (int m = 0; m <= mag; ++m) {
++        const int sx = x + (px << mag) + m;
++        if (sx < 0 || sx >= tms9918a_width) {
++          continue;
++        }
++        const auto idx = static_cast<size_t>(sx);
++        if (occupied[idx]) {
++          vdp->status |= tms9918a_status::collision;
++        }
++        occupied[idx] = true;
++        if (color != 0 && !drawn[idx]) {
++          line[idx] = color;
++          drawn[idx] = true;
++        }
++      }
++    }
++  }
++}
++
++}  // namespace
++
++auto tms9918a_reset(Tms9918a* vdp) noexcept -> void {
++  vdp->regs.fill(0);
++  vdp->address = 0;
++  vdp->read_ahead = 0;
++  vdp->latch = 0;
++  vdp->status = 0;
++  vdp->second_byte = false;
++}
++
++auto tms9918a_data_read(Tms9918a* vdp) noexcept -> uint8_t {
++  const uint8_t value = vdp->read_ahead;
++  vdp->read_ahead = vdp->vram[vdp->address];
++  vdp->address = (vdp->address + 1) & address_mask;
++  vdp->second_byte = false;
++  return value;
++}
++
++auto tms9918a_data_write(Tms9918a* vdp, uint8_t value) noexcept -> void {
++  vdp->vram[vdp->address] = value;
++  vdp->read_ahead = value;
++  vdp->address = (vdp->address + 1) & address_mask;
++  vdp->second_byte = false;
++}
++
++auto tms9918a_status_read(Tms9918a* vdp) noexcept -> uint8_t {
++  const uint8_t value = vdp->status;
++  vdp->status &= static_cast<uint8_t>(
++      ~(tms9918a_status::frame | tms9918a_status::fifth |
++        tms9918a_status::collision));
++  vdp->second_byte = false;
++  return value;
++}
++
++auto tms9918a_control_write(Tms9918a* vdp, uint8_t value) noexcept -> void {
++  if (!vdp->second_byte) {
++    vdp->latch = value;
++    // The low address byte takes effect at once, as on the chip.
++    vdp->address = static_cast<uint16_t>((vdp->address & 0x3F00) | value);
++    vdp->second_byte = true;
++    return;
++  }
++  vdp->second_byte = false;
++  if ((value & 0x80) != 0) {
++    vdp->regs[value & 0x07] = vdp->latch;
++    vdp->address =
++        static_cast<uint16_t>(((value & 0x3F) << 8) | vdp->latch) & address_mask;
++    return;
++  }
++  vdp->address =
++      static_cast<uint16_t>(((value & 0x3F) << 8) | vdp->latch) & address_mask;
++  if ((value & 0x40) == 0) {
++    // Read setup: the chip prefetches the first byte.
++    vdp->read_ahead = vdp->vram[vdp->address];
++    vdp->address = (vdp->address + 1) & address_mask;
++  }
++}
++
++auto tms9918a_irq(const Tms9918a* vdp) noexcept -> bool {
++  return (vdp->regs[1] & r1_ie) != 0 &&
++         (vdp->status & tms9918a_status::frame) != 0;
++}
++
++auto tms9918a_render_frame(Tms9918a* vdp, uint8_t* out) noexcept -> void {
++  const auto& r = vdp->regs;
++  const uint8_t backdrop = r[7] & 0x0F;
++  const bool enabled = (r[1] & r1_blank) != 0;
++  const bool text = (r[1] & r1_m1) != 0;
++
++  for (int y = 0; y < tms9918a_height; ++y) {
++    uint8_t* line = out + (static_cast<ptrdiff_t>(y) * tms9918a_width);
++    if (!enabled) {
++      std::memset(line, backdrop, tms9918a_width);
++      continue;
++    }
++    draw_background(vdp, y, line);
++    if (!text) {
++      draw_sprites(vdp, y, line);
++    }
++    for (int x = 0; x < tms9918a_width; ++x) {
++      if (line[x] == 0) {
++        line[x] = backdrop;
++      }
++    }
++  }
++  vdp->status |= tms9918a_status::frame;
++}
++
++auto tms9918a_palette_rgb(uint8_t color) noexcept -> uint32_t {
++  return palette[color & 0x0F];
++}
+diff --git a/src/apple2/chips/TMS9918A.h b/src/apple2/chips/TMS9918A.h
+new file mode 100644
+index 0000000..949827e
+--- /dev/null
++++ b/src/apple2/chips/TMS9918A.h
+@@ -0,0 +1,61 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#pragma once
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <type_traits>
++
++// TMS9918A Video Display Processor, per the TI data manual (SPPU004) and
++// Sean Young's notes on its undocumented behaviour (tms9918a.txt).
++//
++// The chip is driven through two byte-wide ports selected by its MODE pin:
++// the data port reads and writes VRAM through an auto-incrementing 14-bit
++// address, and the control port sets that address, writes the eight write-only
++// registers and reads the status register. Everything here is host-neutral:
++// the caller decides when a frame ends and what to do with the picture.
++
++constexpr size_t tms9918a_vram_size = 0x4000;
++constexpr size_t tms9918a_num_registers = 8;
++constexpr int tms9918a_width = 256;
++constexpr int tms9918a_height = 192;
++
++namespace tms9918a_status {
++constexpr uint8_t frame = 0x80;      // F: set at the end of the active display
++constexpr uint8_t fifth = 0x40;      // 5S: a fifth sprite was on a line
++constexpr uint8_t collision = 0x20;  // C: two sprites overlap
++constexpr uint8_t number_mask = 0x1F;
++}  // namespace tms9918a_status
++
++struct Tms9918a {
++  std::array<uint8_t, tms9918a_vram_size> vram = {};
++  std::array<uint8_t, tms9918a_num_registers> regs = {};
++  uint16_t address = 0;
++  uint8_t read_ahead = 0;
++  uint8_t latch = 0;
++  uint8_t status = 0;
++  bool second_byte = false;
++};
++
++static_assert(std::is_standard_layout<Tms9918a>::value,
++              "Tms9918a must satisfy standard layout guarantees");
++
++auto tms9918a_reset(Tms9918a* vdp) noexcept -> void;
++
++// MODE = 0
++auto tms9918a_data_read(Tms9918a* vdp) noexcept -> uint8_t;
++auto tms9918a_data_write(Tms9918a* vdp, uint8_t value) noexcept -> void;
++// MODE = 1
++auto tms9918a_status_read(Tms9918a* vdp) noexcept -> uint8_t;
++auto tms9918a_control_write(Tms9918a* vdp, uint8_t value) noexcept -> void;
++
++// The /INT pin: the frame flag while R1's interrupt enable is set.
++auto tms9918a_irq(const Tms9918a* vdp) noexcept -> bool;
++
++// Draws one frame into out (256 x 192 colour numbers, 0 = transparent: the
++// pixel shows the external video) and sets the status register's sprite flags
++// and its frame flag as the chip does at the end of the active display.
++auto tms9918a_render_frame(Tms9918a* vdp, uint8_t* out) noexcept -> void;
++
++// The commonly used RGB rendering of the 15 opaque colours, 0x00RRGGBB.
++auto tms9918a_palette_rgb(uint8_t color) noexcept -> uint32_t;
+diff --git a/src/apple2/peripherals/Peripheral.cpp b/src/apple2/peripherals/Peripheral.cpp
+index 6e73942..b55ff07 100644
+--- a/src/apple2/peripherals/Peripheral.cpp
++++ b/src/apple2/peripherals/Peripheral.cpp
+@@ -19,6 +19,7 @@
+ #include "apple2/CPU.h"
+ #include "apple2/Memory.h"
+ #include "apple2/SnapshotTypes.h"
++#include "apple2/Video.h"
+ #include "apple2/peripherals/Peripheral_Audio.h"
+ #include "apple2/peripherals/Peripheral_Internal.h"
+ #include "core/LinAppleCore.h"
+@@ -427,6 +428,11 @@ static auto host_get_frame_cycles() -> uint32_t {
+                                           : ntsc_frame_cycles;
+ }
+ 
++static auto host_set_video_overlay(void* instance,
++                                   PeripheralVideoOverlay overlay) -> void {
++  video_set_overlay(overlay, overlay != nullptr ? instance : nullptr);
++}
++
+ static auto host_get_config(const char* section, const char* key, char* buffer,
+                             size_t buffer_size) -> bool {
+   std::string val;
+@@ -864,6 +870,7 @@ static HostInterface host_interface = {
+     .ScheduleEvent = host_schedule_event,
+     .GetMachine = host_get_machine,
+     .GetFrameCycles = host_get_frame_cycles,
++    .SetVideoOverlay = host_set_video_overlay,
+ };
+ 
+ // --- Command Queue ---
+diff --git a/src/apple2/peripherals/Peripheral.h b/src/apple2/peripherals/Peripheral.h
+index 44eefe6..c9cdf98 100644
+--- a/src/apple2/peripherals/Peripheral.h
++++ b/src/apple2/peripherals/Peripheral.h
+@@ -34,6 +34,14 @@ typedef PeripheralIOHandler PeripheralIoHandler;
+ // whatever the video scanner is fetching on that very cycle.
+ typedef void (*PeripheralStrobeHandler)(void* instance);
+ 
++// A card with a video output of its own (a sprite board mixing its picture
++// with the Apple's) draws over the finished Apple frame: pixels is the frame
++// as the screen shows it, width x height pixels of 0x00RRGGBB, pitch pixels
++// to a row. It is called on the video thread with the frame locked, so the
++// card guards whatever it shares with its I/O handlers itself.
++typedef void (*PeripheralVideoOverlay)(void* instance, uint32_t* pixels,
++                                       int width, int height, int pitch);
++
+ // Host local time provided to peripheral cards; unix_seconds provides UTC
+ // instant.
+ typedef struct {
+@@ -138,6 +146,10 @@ typedef struct {
+   // never the host's speed. Both appended last, as ReadFloatingBus was.
+   PeripheralMachine (*GetMachine)(void);
+   uint32_t (*GetFrameCycles)(void);
++  // One overlay for the whole machine; NULL removes it. A card sets it at
++  // init and must clear it before its instance is freed. Appended last, as
++  // ReadFloatingBus was.
++  void (*SetVideoOverlay)(void* instance, PeripheralVideoOverlay overlay);
+ } HostInterface;
+ 
+ // Forward declaration
+diff --git a/src/apple2/peripherals/supersprite/SuperSprite.cpp b/src/apple2/peripherals/supersprite/SuperSprite.cpp
+new file mode 100644
+index 0000000..23b1e5c
+--- /dev/null
++++ b/src/apple2/peripherals/supersprite/SuperSprite.cpp
+@@ -0,0 +1,587 @@
++// SPDX-License-Identifier: GPL-2.0-only
++//
++// Synetix SuperSprite (1983): a TMS9918A video display processor with 16 KiB
++// of VRAM whose picture is mixed with the Apple's own video, and an
++// AY-3-8912 sound generator. The Echo II speech synthesizer the card carries
++// (a TMS5220) is not emulated: its status port always reads idle.
++//
++// $C0n0-$C0nF, from the SuperSprite Owner's Manual (p. 33) as MAME's ssprite
++// device has it:
++//   0  VDP VRAM read/write            1  VDP status read / control write
++//   2  TMS5220 speech read/write
++//   3  video switch: Apple video in off (VDP transparent shows black)
++//   4  video switch: Apple video in on  (VDP transparent shows the Apple)
++//   5  video switch: Apple only out     (the VDP picture is not shown)
++//   6  video switch: VDP/external mix out
++//   7  VDP write only / frame reset (ignored)
++//   C, D  AY data write               E, F  AY register select; read: data
++//
++// The VDP's 256-pixel line is wider in time than the Apple's 280, so the two
++// pictures never lined up pixel for pixel on a monitor either. Here the VDP
++// frame is scaled to cover the Apple frame exactly.
++
++#include "apple2/peripherals/supersprite/SuperSprite.h"
++
++#include <array>
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <new>
++
++#include "apple2/chips/AY8910.h"
++#include "apple2/chips/TMS9918A.h"
++#include "apple2/peripherals/Peripheral.h"
++#include "apple2/peripherals/Peripheral_Audio.h"
++#include "apple2/peripherals/Peripheral_Types.h"
++
++namespace {
++
++constexpr int8_t ss_default_slot = 7;
++constexpr uint32_t cycles_per_ay_tick = 8;
++constexpr size_t scratch_ticks = 1024;
++constexpr double dc_blocker_coefficient = 1.0 - (1.0 / 1000.0);
++constexpr double dc_silence_epsilon = 1.0e-5;
++constexpr size_t frame_pixels =
++    static_cast<size_t>(tms9918a_width) * tms9918a_height;
++
++// TMS5220 status with the FIFO empty and nothing being spoken: BL and BE set,
++// TS clear, and the low bits the card leaves pulled up.
++constexpr uint8_t speech_idle_status = 0x7F;
++
++constexpr const char* channel_names[ay8910_num_voices] = {
++    "AY Voice A", "AY Voice B", "AY Voice C"};
++
++namespace port {
++constexpr uint8_t vram = 0x0;
++constexpr uint8_t control = 0x1;
++constexpr uint8_t speech = 0x2;
++constexpr uint8_t apple_in_off = 0x3;
++constexpr uint8_t apple_in_on = 0x4;
++constexpr uint8_t apple_only = 0x5;
++constexpr uint8_t mix = 0x6;
++constexpr uint8_t ay_data_lo = 0xC;
++constexpr uint8_t ay_data_hi = 0xD;
++constexpr uint8_t ay_select_lo = 0xE;
++constexpr uint8_t ay_select_hi = 0xF;
++}  // namespace port
++
++struct DcBlock {
++  double previous_input = 0.0;
++  double previous_output = 0.0;
++};
++
++struct SuperSprite {
++  Tms9918a vdp = {};
++  Ay8910 ay = {};
++  uint8_t ay_register = 0;
++  std::atomic<bool> apple_in{true};
++  std::atomic<bool> vdp_out{false};
++
++  std::mutex frame_mutex;
++  std::array<uint8_t, frame_pixels> frame = {};
++  std::array<uint8_t, frame_pixels> scratch_frame = {};
++
++  std::array<DcBlock, ay8910_num_voices> dc = {};
++  std::array<std::array<float, scratch_ticks>, ay8910_num_voices> scratch = {};
++  uint32_t synced = 0;
++  uint32_t psg_remainder = 0;
++
++  bool irq_line = false;
++  int slot = 0;
++  HostInterface* host = nullptr;
++};
++
++// --- Save state -------------------------------------------------------------
++
++constexpr uint32_t state_version = 1;
++
++struct SuperSpriteSaveState {
++  uint32_t version;
++  uint32_t struct_size;
++  uint8_t vram[tms9918a_vram_size];
++  uint8_t vdp_regs[tms9918a_num_registers];
++  uint16_t vdp_address;
++  uint8_t vdp_read_ahead;
++  uint8_t vdp_latch;
++  uint8_t vdp_status;
++  uint8_t vdp_second_byte;
++  uint8_t apple_in;
++  uint8_t vdp_out;
++  uint8_t ay_register;
++  uint8_t ay_regs[ay8910_num_registers];
++  uint8_t out_a;
++  uint8_t out_b;
++  uint8_t out_c;
++  uint8_t out_n;
++  uint8_t env_holding;
++  uint8_t env_attack;
++  uint8_t padding;
++  uint16_t count_a;
++  uint16_t count_b;
++  uint16_t count_c;
++  uint16_t padding2;
++  uint32_t count_n;
++  uint32_t rng;
++  uint32_t count_e;
++  uint32_t envelope_step;
++  uint32_t psg_remainder;
++};
++
++static_assert(sizeof(SuperSpriteSaveState) == 16460,
++              "SuperSpriteSaveState must keep its layout on every host");
++
++// --- Interrupts -------------------------------------------------------------
++
++auto update_irq(SuperSprite* ss) -> void {
++  const bool line = tms9918a_irq(&ss->vdp);
++  if (line == ss->irq_line) {
++    return;
++  }
++  ss->irq_line = line;
++  if (ss->host != nullptr && ss->host->AssertIrq != nullptr) {
++    ss->host->AssertIrq(ss->slot, line);
++  }
++}
++
++// --- Sound ------------------------------------------------------------------
++
++auto run_dc_block(DcBlock* f, float* buffer, size_t count) -> bool {
++  bool any_signal = false;
++  for (size_t i = 0; i < count; ++i) {
++    const double input = buffer[i];
++    double output = input - f->previous_input +
++                    (dc_blocker_coefficient * f->previous_output);
++    if (output > -dc_silence_epsilon && output < dc_silence_epsilon) {
++      output = 0.0;
++    }
++    f->previous_input = input;
++    f->previous_output = output;
++    buffer[i] = static_cast<float>(output);
++    any_signal = any_signal || output != 0.0;
++  }
++  return any_signal;
++}
++
++auto render_chunk(SuperSprite* ss, size_t ticks) -> void {
++  std::array<float*, ay8910_num_voices> voices = {
++      {ss->scratch[0].data(), ss->scratch[1].data(), ss->scratch[2].data()}};
++  ay8910_step(&ss->ay, ticks, voices.data(), scratch_ticks);
++
++  std::array<const float*, ay8910_num_voices> channels = {};
++  bool any_signal = false;
++  for (size_t v = 0; v < ay8910_num_voices; ++v) {
++    any_signal =
++        run_dc_block(&ss->dc[v], ss->scratch[v].data(), ticks) || any_signal;
++    channels[v] = ss->scratch[v].data();
++  }
++  if (any_signal && ss->host != nullptr &&
++      ss->host->AudioPushChannels != nullptr) {
++    ss->host->AudioPushChannels(ss, channels.data(), ay8910_num_voices, ticks);
++  }
++}
++
++auto advance(SuperSprite* ss, uint32_t cycles) -> void {
++  const uint64_t total = static_cast<uint64_t>(ss->psg_remainder) + cycles;
++  uint64_t ticks = total / cycles_per_ay_tick;
++  ss->psg_remainder = static_cast<uint32_t>(total % cycles_per_ay_tick);
++  while (ticks > 0) {
++    const size_t count =
++        (ticks < scratch_ticks) ? static_cast<size_t>(ticks) : scratch_ticks;
++    render_chunk(ss, count);
++    ticks -= count;
++  }
++}
++
++// A register write takes effect on the cycle it happens, so the sound is
++// brought up to it first.
++auto sync_to(SuperSprite* ss, uint32_t executed_cycles) -> void {
++  if (executed_cycles <= ss->synced) {
++    return;
++  }
++  advance(ss, executed_cycles - ss->synced);
++  ss->synced = executed_cycles;
++}
++
++// --- I/O --------------------------------------------------------------------
++
++auto floating(SuperSprite* ss, uint32_t executed_cycles) -> uint8_t {
++  if (ss->host != nullptr && ss->host->ReadFloatingBus != nullptr) {
++    return ss->host->ReadFloatingBus(executed_cycles);
++  }
++  return 0xFF;
++}
++
++// The video switches answer any access to their address, read or write.
++auto video_switch(SuperSprite* ss, uint8_t reg) -> bool {
++  switch (reg) {
++    case port::apple_in_off:
++      ss->apple_in = false;
++      return true;
++    case port::apple_in_on:
++      ss->apple_in = true;
++      return true;
++    case port::apple_only:
++      ss->vdp_out = false;
++      return true;
++    case port::mix:
++      ss->vdp_out = true;
++      return true;
++    default:
++      return false;
++  }
++}
++
++auto io_read(void* instance, uint16_t pc, uint16_t addr, uint8_t write,
++             uint8_t val, uint32_t executed_cycles) -> uint8_t {
++  (void)pc;
++  (void)write;
++  (void)val;
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr) {
++    return 0xFF;
++  }
++  const auto reg = static_cast<uint8_t>(addr & 0x0F);
++  switch (reg) {
++    case port::vram:
++      return tms9918a_data_read(&ss->vdp);
++    case port::control: {
++      const uint8_t status = tms9918a_status_read(&ss->vdp);
++      update_irq(ss);
++      return status;
++    }
++    case port::speech:
++      return speech_idle_status;
++    case port::ay_select_lo:
++    case port::ay_select_hi:
++      sync_to(ss, executed_cycles);
++      return ss->ay.regs[ss->ay_register];
++    default:
++      video_switch(ss, reg);
++      return floating(ss, executed_cycles);
++  }
++}
++
++auto io_write(void* instance, uint16_t pc, uint16_t addr, uint8_t write,
++              uint8_t val, uint32_t executed_cycles) -> uint8_t {
++  (void)pc;
++  (void)write;
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr) {
++    return 0;
++  }
++  const auto reg = static_cast<uint8_t>(addr & 0x0F);
++  switch (reg) {
++    case port::vram:
++      tms9918a_data_write(&ss->vdp, val);
++      break;
++    case port::control:
++      // R1 holds the interrupt enable, so a register write can raise or
++      // drop the line.
++      tms9918a_control_write(&ss->vdp, val);
++      update_irq(ss);
++      break;
++    case port::ay_data_lo:
++    case port::ay_data_hi:
++      sync_to(ss, executed_cycles);
++      ay8910_write(&ss->ay, ss->ay_register, val);
++      break;
++    case port::ay_select_lo:
++    case port::ay_select_hi:
++      // The AY-3-8912's upper address lines are tied to select it at 0-15;
++      // a higher value selects nothing and keeps the latched register.
++      if (val < ay8910_num_registers) {
++        ss->ay_register = val;
++      }
++      break;
++    default:
++      video_switch(ss, reg);
++      break;
++  }
++  return 0;
++}
++
++// --- Video ------------------------------------------------------------------
++
++auto overlay(void* instance, uint32_t* pixels, int width, int height,
++             int pitch) -> void {
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr || pixels == nullptr || width <= 0 || height <= 0 ||
++      !ss->vdp_out.load()) {
++    return;
++  }
++  const bool apple_in = ss->apple_in.load();
++  const std::lock_guard<std::mutex> lock(ss->frame_mutex);
++  for (int y = 0; y < height; ++y) {
++    const int sy = (y * tms9918a_height) / height;
++    const uint8_t* src =
++        ss->frame.data() + (static_cast<ptrdiff_t>(sy) * tms9918a_width);
++    uint32_t* dst = pixels + (static_cast<ptrdiff_t>(y) * pitch);
++    for (int x = 0; x < width; ++x) {
++      const uint8_t c = src[(x * tms9918a_width) / width];
++      if (c != 0) {
++        dst[x] = tms9918a_palette_rgb(c);
++      } else if (!apple_in) {
++        dst[x] = 0;
++      }
++    }
++  }
++}
++
++// --- Peripheral ABI ---------------------------------------------------------
++
++auto ss_init(int slot, HostInterface* host) -> void* {
++  if (host == nullptr || host->RegisterIO == nullptr) {
++    return nullptr;
++  }
++  auto card = std::unique_ptr<SuperSprite>(new (std::nothrow) SuperSprite{});
++  if (!card) {
++    return nullptr;
++  }
++  card->host = host;
++  card->slot = slot;
++  tms9918a_reset(&card->vdp);
++  ay8910_reset(&card->ay);
++  host->RegisterIO(slot, io_read, io_write, nullptr, nullptr);
++  if (host->SetVideoOverlay != nullptr) {
++    host->SetVideoOverlay(card.get(), overlay);
++  } else if (host->Log != nullptr) {
++    host->Log(card.get(), log_warn,
++              "SuperSprite: this host cannot mix the VDP picture in\n");
++  }
++  return card.release();
++}
++
++auto ss_reset(void* instance) -> void {
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr) {
++    return;
++  }
++  tms9918a_reset(&ss->vdp);
++  ay8910_reset(&ss->ay);
++  ss->ay_register = 0;
++  ss->apple_in = true;
++  ss->vdp_out = false;
++  for (auto& f : ss->dc) {
++    f = DcBlock{};
++  }
++  ss->synced = 0;
++  ss->psg_remainder = 0;
++  ss->irq_line = false;
++  if (ss->host != nullptr && ss->host->AssertIrq != nullptr) {
++    ss->host->AssertIrq(ss->slot, false);
++  }
++}
++
++auto ss_shutdown(void* instance) -> void {
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr) {
++    return;
++  }
++  if (ss->host != nullptr && ss->host->SetVideoOverlay != nullptr) {
++    ss->host->SetVideoOverlay(ss, nullptr);
++  }
++  delete ss;
++}
++
++auto ss_think(void* instance, uint32_t cycles) -> void {
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr) {
++    return;
++  }
++  if (cycles > ss->synced) {
++    advance(ss, cycles - ss->synced);
++  }
++  ss->synced = 0;
++}
++
++// The frame is drawn whole at the end of each Apple frame, which is also when
++// the VDP raises its frame interrupt. Changes in the middle of a frame show on
++// the next one.
++auto ss_on_vblank(void* instance, bool vblank) -> void {
++  auto* ss = static_cast<SuperSprite*>(instance);
++  if (ss == nullptr || !vblank) {
++    return;
++  }
++  tms9918a_render_frame(&ss->vdp, ss->scratch_frame.data());
++  {
++    const std::lock_guard<std::mutex> lock(ss->frame_mutex);
++    ss->frame = ss->scratch_frame;
++  }
++  update_irq(ss);
++}
++
++auto ss_save_state(void* instance, void* buffer, size_t* size)
++    -> PeripheralStatus {
++  if (size == nullptr) {
++    return peripheral_error;
++  }
++  const size_t required = sizeof(SuperSpriteSaveState);
++  if (buffer == nullptr) {
++    *size = required;
++    return peripheral_ok;
++  }
++  if (instance == nullptr || *size < required) {
++    *size = required;
++    return peripheral_error;
++  }
++  const auto* ss = static_cast<const SuperSprite*>(instance);
++  auto* st = static_cast<SuperSpriteSaveState*>(buffer);
++  std::memset(st, 0, required);
++  st->version = state_version;
++  st->struct_size = static_cast<uint32_t>(required);
++  std::memcpy(st->vram, ss->vdp.vram.data(), tms9918a_vram_size);
++  std::memcpy(st->vdp_regs, ss->vdp.regs.data(), tms9918a_num_registers);
++  st->vdp_address = ss->vdp.address;
++  st->vdp_read_ahead = ss->vdp.read_ahead;
++  st->vdp_latch = ss->vdp.latch;
++  st->vdp_status = ss->vdp.status;
++  st->vdp_second_byte = ss->vdp.second_byte ? 1U : 0U;
++  st->apple_in = ss->apple_in.load() ? 1U : 0U;
++  st->vdp_out = ss->vdp_out.load() ? 1U : 0U;
++  st->ay_register = ss->ay_register;
++  std::memcpy(st->ay_regs, ss->ay.regs.data(), ay8910_num_registers);
++  st->out_a = ss->ay.out_a;
++  st->out_b = ss->ay.out_b;
++  st->out_c = ss->ay.out_c;
++  st->out_n = ss->ay.out_n;
++  st->env_holding = ss->ay.env_holding ? 1U : 0U;
++  st->env_attack = ss->ay.env_attack ? 1U : 0U;
++  st->count_a = ss->ay.count_a;
++  st->count_b = ss->ay.count_b;
++  st->count_c = ss->ay.count_c;
++  st->count_n = ss->ay.count_n;
++  st->rng = ss->ay.rng;
++  st->count_e = ss->ay.count_e;
++  st->envelope_step = ss->ay.envelope_step;
++  st->psg_remainder = ss->psg_remainder;
++  *size = required;
++  return peripheral_ok;
++}
++
++auto ss_load_state(void* instance, const void* buffer, size_t size)
++    -> PeripheralStatus {
++  if (instance == nullptr || buffer == nullptr ||
++      size != sizeof(SuperSpriteSaveState)) {
++    return peripheral_error;
++  }
++  const auto* st = static_cast<const SuperSpriteSaveState*>(buffer);
++  if (st->version != state_version ||
++      st->struct_size != sizeof(SuperSpriteSaveState)) {
++    return peripheral_error;
++  }
++  auto* ss = static_cast<SuperSprite*>(instance);
++  std::memcpy(ss->vdp.vram.data(), st->vram, tms9918a_vram_size);
++  std::memcpy(ss->vdp.regs.data(), st->vdp_regs, tms9918a_num_registers);
++  ss->vdp.address = st->vdp_address & (tms9918a_vram_size - 1);
++  ss->vdp.read_ahead = st->vdp_read_ahead;
++  ss->vdp.latch = st->vdp_latch;
++  ss->vdp.status = st->vdp_status;
++  ss->vdp.second_byte = st->vdp_second_byte != 0;
++  ss->apple_in = st->apple_in != 0;
++  ss->vdp_out = st->vdp_out != 0;
++  ss->ay_register = st->ay_register & (ay8910_num_registers - 1);
++  for (size_t r = 0; r < ay8910_num_registers; ++r) {
++    ay8910_write(&ss->ay, static_cast<uint8_t>(r), st->ay_regs[r]);
++  }
++  ss->ay.out_a = st->out_a;
++  ss->ay.out_b = st->out_b;
++  ss->ay.out_c = st->out_c;
++  ss->ay.out_n = st->out_n;
++  ss->ay.env_holding = st->env_holding != 0;
++  ss->ay.env_attack = st->env_attack != 0;
++  ss->ay.count_a = st->count_a;
++  ss->ay.count_b = st->count_b;
++  ss->ay.count_c = st->count_c;
++  ss->ay.count_n = st->count_n;
++  ss->ay.rng = (st->rng != 0) ? st->rng : 1U;
++  ss->ay.count_e = st->count_e;
++  ss->ay.envelope_step = st->envelope_step & 0x0F;
++  ss->ay.envelope_vol = static_cast<uint8_t>(
++      ss->ay.env_attack ? ss->ay.envelope_step
++                        : (15U - ss->ay.envelope_step));
++  ss->psg_remainder = st->psg_remainder % cycles_per_ay_tick;
++  ss->synced = 0;
++  for (auto& f : ss->dc) {
++    f = DcBlock{};
++  }
++  // Show the restored VRAM at once rather than a frame later.
++  {
++    const uint8_t status = ss->vdp.status;
++    tms9918a_render_frame(&ss->vdp, ss->scratch_frame.data());
++    ss->vdp.status = status;
++    const std::lock_guard<std::mutex> lock(ss->frame_mutex);
++    ss->frame = ss->scratch_frame;
++  }
++  ss->irq_line = !tms9918a_irq(&ss->vdp);
++  update_irq(ss);
++  return peripheral_ok;
++}
++
++auto query_audio_info(void* out, size_t* out_size) -> PeripheralStatus {
++  const size_t required = sizeof(PeripheralAudioInfo);
++  if (out == nullptr) {
++    *out_size = required;
++    return peripheral_ok;
++  }
++  if (*out_size < required) {
++    *out_size = required;
++    return peripheral_error;
++  }
++  std::memset(out, 0, required);
++  auto& info = *static_cast<PeripheralAudioInfo*>(out);
++  info.time_base = peripheral_audio_cpu_clocked;
++  info.cycle_divisor = cycles_per_ay_tick;
++  info.num_channels = ay8910_num_voices;
++  info.peak_magnitude = 1.0F;
++  for (size_t i = 0; i < ay8910_num_voices; ++i) {
++    std::strncpy(info.channels[i].name, channel_names[i],
++                 sizeof(info.channels[i].name) - 1);
++    // One mono output jack.
++    info.channels[i].default_pan_left = 1.0F;
++    info.channels[i].default_pan_right = 1.0F;
++  }
++  *out_size = required;
++  return peripheral_ok;
++}
++
++auto ss_query(void* instance, uint32_t cmd_id, void* out, size_t* out_size)
++    -> PeripheralStatus {
++  if (instance == nullptr || out_size == nullptr) {
++    return peripheral_error;
++  }
++  if (cmd_id == PERIPHERAL_QUERY_AUDIO_INFO) {
++    return query_audio_info(out, out_size);
++  }
++  return peripheral_incompatible;
++}
++
++Peripheral supersprite_peripheral = {
++    .abi_version = LINAPPLE_ABI_VERSION,
++    .id = "linapple.supersprite",
++    .name = "SuperSprite",
++    .description = "Synetix SuperSprite (TMS9918A VDP, AY-3-8912)",
++    .author = "LinApple Contributors",
++    .version = VERSIONSTRING,
++    .compatible_slots = PERIPHERAL_MASK_EXPANSION,
++    .default_slot = ss_default_slot,
++    .init = ss_init,
++    .reset = ss_reset,
++    .shutdown = ss_shutdown,
++    .think = ss_think,
++    .on_vblank = ss_on_vblank,
++    .save_state = ss_save_state,
++    .load_state = ss_load_state,
++    .command = nullptr,
++    .query = ss_query,
++};
++
++}  // namespace
++
++extern "C" auto supersprite_get_descriptor() -> Peripheral* {
++  return &supersprite_peripheral;
++}
++
++PERIPHERAL_REGISTER(supersprite_peripheral)
+diff --git a/src/apple2/peripherals/supersprite/SuperSprite.h b/src/apple2/peripherals/supersprite/SuperSprite.h
+new file mode 100644
+index 0000000..4912c79
+--- /dev/null
++++ b/src/apple2/peripherals/supersprite/SuperSprite.h
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#pragma once
++
++struct Peripheral;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct Peripheral* supersprite_get_descriptor(void);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/tests/test_peripheral_abi.cpp b/tests/test_peripheral_abi.cpp
+index f635d51..66dff4a 100644
+--- a/tests/test_peripheral_abi.cpp
++++ b/tests/test_peripheral_abi.cpp
+@@ -265,8 +265,11 @@ static_assert(offsetof(HostInterface, GetMachine) == 30 * host_member_size,
+ static_assert(offsetof(HostInterface, GetFrameCycles) ==
+                   31 * host_member_size,
+               "GetFrameCycles moved");
+-static_assert(sizeof(HostInterface) == 32 * host_member_size,
+-              "HostInterface grew past GetFrameCycles");
++static_assert(offsetof(HostInterface, SetVideoOverlay) ==
++                  32 * host_member_size,
++              "SetVideoOverlay is not the first member after GetFrameCycles");
++static_assert(sizeof(HostInterface) == 33 * host_member_size,
++              "HostInterface grew past SetVideoOverlay");
+ static_assert(peripheral_machine_apple2 == 0 &&
+                   peripheral_machine_apple2_plus == 1 &&
+                   peripheral_machine_apple2e == 2,
+diff --git a/tests/test_peripheral_abi_c.c b/tests/test_peripheral_abi_c.c
+index d983f10..628c48e 100644
+--- a/tests/test_peripheral_abi_c.c
++++ b/tests/test_peripheral_abi_c.c
+@@ -146,8 +146,13 @@ typedef char
+                                           31 * sizeof(void (*)(void))
+                                       ? 1
+                                       : -1];
+-typedef char host_interface_has_32_members
+-    [sizeof(HostInterface) == 32 * sizeof(void (*)(void)) ? 1 : -1];
++typedef char
++    set_video_overlay_is_member_32[offsetof(HostInterface, SetVideoOverlay) ==
++                                           32 * sizeof(void (*)(void))
++                                       ? 1
++                                       : -1];
++typedef char host_interface_has_33_members
++    [sizeof(HostInterface) == 33 * sizeof(void (*)(void)) ? 1 : -1];
+ typedef char
+     machine_values_are_pinned[peripheral_machine_apple2 == 0 &&
+                                       peripheral_machine_apple2_plus == 1 &&
+diff --git a/tests/test_supersprite.cpp b/tests/test_supersprite.cpp
+new file mode 100644
+index 0000000..ff33c2a
+--- /dev/null
++++ b/tests/test_supersprite.cpp
+@@ -0,0 +1,493 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "apple2/Memory.h"
++#include "apple2/SnapshotTypes.h"
++#include "apple2/Video.h"
++#include "apple2/chips/TMS9918A.h"
++#include "apple2/peripherals/Peripheral.h"
++#include "core/LinAppleCore.h"
++#include "doctest.h"
++#include "test_fixtures_core.h"
++
++auto io_map_dispatch(uint16_t pc, uint16_t addr, uint8_t write, uint8_t val,
++                     uint32_t cycles) -> uint8_t;
++
++namespace {
++
++// --- The chip on its own ------------------------------------------------------
++
++auto set_register(Tms9918a* vdp, uint8_t reg, uint8_t value) -> void {
++  tms9918a_control_write(vdp, value);
++  tms9918a_control_write(vdp, static_cast<uint8_t>(0x80 | reg));
++}
++
++auto set_write_address(Tms9918a* vdp, uint16_t addr) -> void {
++  tms9918a_control_write(vdp, static_cast<uint8_t>(addr & 0xFF));
++  tms9918a_control_write(vdp, static_cast<uint8_t>(0x40 | (addr >> 8)));
++}
++
++auto set_read_address(Tms9918a* vdp, uint16_t addr) -> void {
++  tms9918a_control_write(vdp, static_cast<uint8_t>(addr & 0xFF));
++  tms9918a_control_write(vdp, static_cast<uint8_t>(addr >> 8));
++}
++
++auto fill(Tms9918a* vdp, uint16_t addr, uint8_t value, size_t count) -> void {
++  set_write_address(vdp, addr);
++  for (size_t i = 0; i < count; ++i) {
++    tms9918a_data_write(vdp, value);
++  }
++}
++
++// Graphics I with the conventional table layout and the display on.
++constexpr uint16_t name_table = 0x1800;
++constexpr uint16_t color_table = 0x2000;
++constexpr uint16_t pattern_table = 0x0000;
++constexpr uint16_t sprite_attr = 0x1B00;
++constexpr uint16_t sprite_patterns = 0x3800;
++
++auto graphics1(Tms9918a* vdp, uint8_t r1_extra = 0) -> void {
++  tms9918a_reset(vdp);
++  vdp->vram.fill(0);
++  set_register(vdp, 0, 0x00);
++  set_register(vdp, 1, static_cast<uint8_t>(0xC0 | r1_extra));
++  set_register(vdp, 2, name_table >> 10);
++  set_register(vdp, 3, color_table >> 6);
++  set_register(vdp, 4, pattern_table >> 11);
++  set_register(vdp, 5, sprite_attr >> 7);
++  set_register(vdp, 6, sprite_patterns >> 11);
++  set_register(vdp, 7, 0x00);
++  fill(vdp, sprite_attr, 0xD0, 1);
++}
++
++auto put_sprite(Tms9918a* vdp, int n, uint8_t y, uint8_t x, uint8_t name,
++                uint8_t color) -> void {
++  set_write_address(vdp, static_cast<uint16_t>(sprite_attr + (n * 4)));
++  tms9918a_data_write(vdp, y);
++  tms9918a_data_write(vdp, x);
++  tms9918a_data_write(vdp, name);
++  tms9918a_data_write(vdp, color);
++}
++
++auto pixel(const std::vector<uint8_t>& frame, int x, int y) -> uint8_t {
++  return frame[static_cast<size_t>((y * tms9918a_width) + x)];
++}
++
++}  // namespace
++
++TEST_CASE("TMS9918A: VRAM goes through the auto-incrementing address") {
++  Tms9918a vdp;
++  tms9918a_reset(&vdp);
++  set_write_address(&vdp, 0x1234);
++  tms9918a_data_write(&vdp, 0xAA);
++  tms9918a_data_write(&vdp, 0x55);
++  CHECK(vdp.vram[0x1234] == 0xAA);
++  CHECK(vdp.vram[0x1235] == 0x55);
++
++  // A read setup prefetches, so the first data read is the byte at the
++  // address just set.
++  set_read_address(&vdp, 0x1234);
++  CHECK(tms9918a_data_read(&vdp) == 0xAA);
++  CHECK(tms9918a_data_read(&vdp) == 0x55);
++
++  // The address wraps at 16 KiB.
++  set_write_address(&vdp, 0x3FFF);
++  tms9918a_data_write(&vdp, 0x11);
++  tms9918a_data_write(&vdp, 0x22);
++  CHECK(vdp.vram[0x3FFF] == 0x11);
++  CHECK(vdp.vram[0x0000] == 0x22);
++}
++
++TEST_CASE("TMS9918A: a register write is a value then 0x80 | register") {
++  Tms9918a vdp;
++  tms9918a_reset(&vdp);
++  set_register(&vdp, 7, 0xF4);
++  set_register(&vdp, 1, 0xE0);
++  CHECK(vdp.regs[7] == 0xF4);
++  CHECK(vdp.regs[1] == 0xE0);
++  // A status read resets the two-byte sequence.
++  tms9918a_control_write(&vdp, 0x12);
++  tms9918a_status_read(&vdp);
++  set_register(&vdp, 2, 0x06);
++  CHECK(vdp.regs[2] == 0x06);
++}
++
++TEST_CASE("TMS9918A: the frame flag interrupts only with R1's enable") {
++  Tms9918a vdp;
++  std::vector<uint8_t> frame(static_cast<size_t>(256) * 192);
++  graphics1(&vdp);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK((vdp.status & tms9918a_status::frame) != 0);
++  CHECK_FALSE(tms9918a_irq(&vdp));
++
++  set_register(&vdp, 1, 0xE0);
++  CHECK(tms9918a_irq(&vdp));
++  const uint8_t status = tms9918a_status_read(&vdp);
++  CHECK((status & tms9918a_status::frame) != 0);
++  CHECK_FALSE(tms9918a_irq(&vdp));
++  CHECK((vdp.status & tms9918a_status::frame) == 0);
++}
++
++TEST_CASE("TMS9918A: Graphics I draws patterns in the colour of their group") {
++  Tms9918a vdp;
++  std::vector<uint8_t> frame(static_cast<size_t>(256) * 192);
++  graphics1(&vdp);
++  // Pattern 9 is a left half bar; group 1 (patterns 8-15) is red on blue.
++  fill(&vdp, static_cast<uint16_t>(pattern_table + (9 * 8)), 0xF0, 8);
++  fill(&vdp, static_cast<uint16_t>(color_table + 1), 0x64, 1);
++  fill(&vdp, static_cast<uint16_t>(name_table + (2 * 32) + 3), 9, 1);
++  set_register(&vdp, 7, 0x01);  // backdrop black
++
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 24, 16) == 6);
++  CHECK(pixel(frame, 27, 23) == 6);
++  CHECK(pixel(frame, 28, 16) == 4);
++  // Pattern 0 is blank in group 0, whose colours are 0: the backdrop shows.
++  CHECK(pixel(frame, 0, 0) == 1);
++
++  // With the backdrop transparent too, the external video shows.
++  set_register(&vdp, 7, 0x00);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 0, 0) == 0);
++
++  // Blanked, the whole screen is backdrop.
++  set_register(&vdp, 7, 0x05);
++  set_register(&vdp, 1, 0x80);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 24, 16) == 5);
++}
++
++TEST_CASE("TMS9918A: text mode is 40 six-pixel columns between borders") {
++  Tms9918a vdp;
++  std::vector<uint8_t> frame(static_cast<size_t>(256) * 192);
++  graphics1(&vdp, 0x10);
++  set_register(&vdp, 2, 0x00);  // names at 0x0000
++  set_register(&vdp, 4, 0x01);  // patterns at 0x0800
++  set_register(&vdp, 7, 0xF4);  // white on dark blue
++  fill(&vdp, 0x0000, 0, 960);
++  fill(&vdp, 0x0800 + (1 * 8), 0xFC, 8);  // six pixels lit
++  fill(&vdp, 0x0001, 1, 1);               // column 1, row 0
++
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 0, 0) == 4);       // border
++  CHECK(pixel(frame, 8, 0) == 4);       // column 0, background
++  CHECK(pixel(frame, 14, 0) == 15);     // column 1 starts at x = 14
++  CHECK(pixel(frame, 19, 0) == 15);
++  CHECK(pixel(frame, 20, 0) == 4);      // column 2
++  CHECK(pixel(frame, 250, 100) == 4);   // right border
++}
++
++TEST_CASE("TMS9918A: sprites, magnification, priority and collision") {
++  Tms9918a vdp;
++  std::vector<uint8_t> frame(static_cast<size_t>(256) * 192);
++  graphics1(&vdp);
++  fill(&vdp, sprite_patterns, 0xFF, 8);  // pattern 0: a solid block
++
++  // Y is one line above the first drawn line.
++  put_sprite(&vdp, 0, 9, 20, 0, 0x0F);
++  put_sprite(&vdp, 1, 13, 24, 0, 0x06);
++  put_sprite(&vdp, 2, 0xD0, 0, 0, 0);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 20, 9) == 0);
++  CHECK(pixel(frame, 20, 10) == 15);
++  CHECK(pixel(frame, 27, 17) == 15);  // sprite 0 wins where they overlap
++  CHECK(pixel(frame, 30, 20) == 6);
++  CHECK(pixel(frame, 28, 18) == 6);
++  CHECK((vdp.status & tms9918a_status::collision) != 0);
++  tms9918a_status_read(&vdp);
++
++  // Magnified, sprite 0 covers 16 x 16.
++  put_sprite(&vdp, 1, 0xD0, 0, 0, 0);
++  set_register(&vdp, 1, 0xC1);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 35, 25) == 15);
++  CHECK(pixel(frame, 36, 25) == 0);
++  CHECK((vdp.status & tms9918a_status::collision) == 0);
++
++  // Early clock moves a sprite 32 pixels to the left.
++  set_register(&vdp, 1, 0xC0);
++  put_sprite(&vdp, 0, 9, 40, 0, 0x8F);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 8, 10) == 15);
++  CHECK(pixel(frame, 40, 10) == 0);
++
++  // A sprite whose Y is past the terminator starts above the screen.
++  put_sprite(&vdp, 0, 0xFC, 100, 0, 0x0F);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 100, 0) == 15);
++  CHECK(pixel(frame, 100, 4) == 15);  // lines -3 to 4
++  CHECK(pixel(frame, 100, 5) == 0);
++}
++
++TEST_CASE("TMS9918A: the fifth sprite on a line is dropped and reported") {
++  Tms9918a vdp;
++  std::vector<uint8_t> frame(static_cast<size_t>(256) * 192);
++  graphics1(&vdp);
++  fill(&vdp, sprite_patterns, 0xFF, 8);
++  for (int n = 0; n < 5; ++n) {
++    put_sprite(&vdp, n, 49, static_cast<uint8_t>(n * 20), 0, 0x0A);
++  }
++  put_sprite(&vdp, 5, 0xD0, 0, 0, 0);
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 60, 50) == 10);
++  CHECK(pixel(frame, 80, 50) == 0);
++  const uint8_t status = tms9918a_status_read(&vdp);
++  CHECK((status & tms9918a_status::fifth) != 0);
++  CHECK((status & tms9918a_status::number_mask) == 4);
++}
++
++TEST_CASE("TMS9918A: Graphics II gives every third its own patterns") {
++  Tms9918a vdp;
++  std::vector<uint8_t> frame(static_cast<size_t>(256) * 192);
++  tms9918a_reset(&vdp);
++  vdp.vram.fill(0);
++  set_register(&vdp, 0, 0x02);
++  set_register(&vdp, 1, 0xC0);
++  set_register(&vdp, 2, 0x0E);  // names 0x3800
++  set_register(&vdp, 3, 0xFF);  // colours 0x2000, full mask
++  set_register(&vdp, 4, 0x03);  // patterns 0x0000, full mask
++  set_register(&vdp, 5, 0x76);
++  set_register(&vdp, 7, 0x01);
++  fill(&vdp, 0x3B00, 0xD0, 1);
++  // Name 0 everywhere; the middle third's pattern 0 is solid, line by line
++  // coloured.
++  fill(&vdp, 0x0800, 0xFF, 8);
++  for (int line = 0; line < 8; ++line) {
++    fill(&vdp, static_cast<uint16_t>(0x2800 + line),
++         static_cast<uint8_t>((line + 2) << 4), 1);
++  }
++  tms9918a_render_frame(&vdp, frame.data());
++  CHECK(pixel(frame, 0, 0) == 1);    // top third: blank pattern, backdrop
++  CHECK(pixel(frame, 0, 64) == 2);   // middle third, line 0
++  CHECK(pixel(frame, 5, 67) == 5);   // line 3
++  CHECK(pixel(frame, 0, 128) == 1);  // bottom third
++}
++
++// --- The card in slot 7 ------------------------------------------------------
++
++namespace {
++
++using TestConfig = TestFixtures::ScopedTestConfig;
++using TestFixtures::ScopedCore;
++
++constexpr int card_slot = 7;
++constexpr uint16_t io_base = 0xC080 + (card_slot << 4);
++
++auto supersprite_in_slot_7() -> TestConfig::Description {
++  TestConfig::Description description;
++  description.slots[6] = "SuperSprite";
++  return description;
++}
++
++auto card_write(uint8_t reg, uint8_t value) -> void {
++  io_map_dispatch(0, static_cast<uint16_t>(io_base + reg), 1, value, 0);
++}
++
++auto card_read(uint8_t reg) -> uint8_t {
++  return io_map_dispatch(0, static_cast<uint16_t>(io_base + reg), 0, 0, 0);
++}
++
++auto vdp_register(uint8_t reg, uint8_t value) -> void {
++  card_write(1, value);
++  card_write(1, static_cast<uint8_t>(0x80 | reg));
++}
++
++auto vdp_fill(uint16_t addr, uint8_t value, size_t count) -> void {
++  card_write(1, static_cast<uint8_t>(addr & 0xFF));
++  card_write(1, static_cast<uint8_t>(0x40 | (addr >> 8)));
++  for (size_t i = 0; i < count; ++i) {
++    card_write(0, value);
++  }
++}
++
++auto frame_copy() -> std::vector<uint32_t> {
++  peripheral_manager_on_vblank(true);
++  video_redraw_screen();
++  const uint32_t* out = video_get_output_buffer();
++  return {out, out + (static_cast<size_t>(560) * 384)};
++}
++
++auto at(const std::vector<uint32_t>& f, int x, int y) -> uint32_t {
++  return f[static_cast<size_t>((y * 560) + x)];
++}
++
++// Where the output pixel (x, y) samples the VDP frame.
++auto vdp_x(int x) -> int { return (x * 256) / 560; }
++auto vdp_y(int y) -> int { return (y * 192) / 384; }
++
++auto dump_ppm(const std::vector<uint32_t>& f, const char* name) -> void {
++  const char* dir = std::getenv("SUPERSPRITE_DUMP_DIR");
++  if (dir == nullptr) {
++    return;
++  }
++  std::string path = std::string(dir) + "/" + name;
++  FILE* fp = std::fopen(path.c_str(), "wb");
++  if (fp == nullptr) {
++    return;
++  }
++  std::fprintf(fp, "P6\n560 384\n255\n");
++  for (uint32_t p : f) {
++    const std::array<uint8_t, 3> rgb = {static_cast<uint8_t>(p >> 16),
++                                        static_cast<uint8_t>(p >> 8),
++                                        static_cast<uint8_t>(p)};
++    std::fwrite(rgb.data(), 1, rgb.size(), fp);
++  }
++  std::fclose(fp);
++}
++
++}  // namespace
++
++TEST_CASE("SuperSprite: the VDP picture is mixed over the Apple's") {
++  TestConfig config(supersprite_in_slot_7());
++  ScopedCore core(config);
++
++  SS_PERIPHERAL_MANIFEST manifest;
++  peripheral_get_manifest(&manifest);
++  REQUIRE(std::strcmp(manifest.peripherals[card_slot].name, "SuperSprite") ==
++          0);
++
++  // Some Apple text to see through the VDP's transparent pixels.
++  {
++    uint8_t* text = mem_get_main_ptr(0x0400);
++    if (text != nullptr) {
++      for (int i = 0; i < 40; ++i) {
++        text[i] = static_cast<uint8_t>(0xC1 + (i % 26));  // A..Z, normal
++      }
++    }
++  }
++  const auto apple = frame_copy();
++  dump_ppm(apple, "apple_only.ppm");
++
++  // Graphics I: one solid red tile top left, a white sprite at (100, 48).
++  vdp_register(0, 0x00);
++  vdp_register(1, 0xC0);
++  vdp_register(2, 0x06);
++  vdp_register(3, 0x80);
++  vdp_register(4, 0x00);
++  vdp_register(5, 0x36);
++  vdp_register(6, 0x07);
++  vdp_register(7, 0x00);
++  vdp_fill(0x0000, 0x00, 0x4000);
++  vdp_fill(0x0008, 0xFF, 8);       // pattern 1
++  vdp_fill(0x2000, 0x60, 1);       // group 0: red on transparent
++  vdp_fill(0x1800, 0x01, 1);       // name (0, 0) = pattern 1
++  vdp_fill(0x3800, 0xFF, 8);       // sprite pattern 0
++  card_write(1, 0x00);
++  card_write(1, 0x40 | 0x1B);
++  card_write(0, 47);               // Y (drawn from line 48)
++  card_write(0, 100);              // X
++  card_write(0, 0);                // name
++  card_write(0, 0x0F);             // white
++  card_write(0, 0xD0);             // end of list
++
++  // Out of reset the card shows only the Apple.
++  CHECK(frame_copy() == apple);
++
++  card_read(6);  // mix the VDP in
++  card_read(4);  // with the Apple video under it
++  const auto mixed = frame_copy();
++  dump_ppm(mixed, "mixed.ppm");
++
++  int checked = 0;
++  for (int y = 0; y < 384; y += 3) {
++    for (int x = 0; x < 560; x += 3) {
++      const int vx = vdp_x(x);
++      const int vy = vdp_y(y);
++      const bool tile = vx < 8 && vy < 8;
++      const bool sprite = vx >= 100 && vx < 108 && vy >= 48 && vy < 56;
++      if (tile) {
++        CHECK(at(mixed, x, y) == tms9918a_palette_rgb(6));
++      } else if (sprite) {
++        CHECK(at(mixed, x, y) == tms9918a_palette_rgb(15));
++      } else if (at(mixed, x, y) != at(apple, x, y)) {
++        FAIL_CHECK("transparent pixel at " << x << "," << y
++                                           << " is not the Apple's");
++      }
++      ++checked;
++    }
++  }
++  CHECK(checked > 0);
++
++  // Apple video in off: the transparent pixels go black.
++  card_write(3, 0);
++  const auto vdp_only = frame_copy();
++  dump_ppm(vdp_only, "vdp_only.ppm");
++  CHECK(at(vdp_only, 300, 300) == 0);
++  CHECK(at(vdp_only, 4, 4) == tms9918a_palette_rgb(6));
++
++  // Apple only out.
++  card_write(5, 0);
++  CHECK(frame_copy() == apple);
++
++  // The VDP frame interrupt reaches the slot's IRQ line through R1.
++  vdp_register(1, 0xE0);
++  peripheral_manager_on_vblank(true);
++  const uint8_t status = card_read(1);
++  CHECK((status & 0x80) != 0);
++  CHECK((card_read(1) & 0x80) == 0);
++}
++
++TEST_CASE("SuperSprite: the AY registers and the speech port") {
++  TestConfig config(supersprite_in_slot_7());
++  ScopedCore core(config);
++
++  card_write(0xE, 0x07);
++  card_write(0xC, 0x3E);
++  card_write(0xF, 0x08);
++  card_write(0xD, 0x0F);
++  card_write(0xE, 0x07);
++  CHECK(card_read(0xE) == 0x3E);
++  card_write(0xE, 0x08);
++  CHECK(card_read(0xF) == 0x0F);
++
++  // A register number past 15 selects nothing.
++  card_write(0xE, 0x23);
++  CHECK(card_read(0xE) == 0x0F);
++
++  // The Echo II's TMS5220 is not emulated: idle, FIFO empty.
++  CHECK(card_read(2) == 0x7F);
++}
++
++TEST_CASE("SuperSprite: a save state carries VRAM, registers and switches") {
++  TestConfig config(supersprite_in_slot_7());
++  ScopedCore core(config);
++
++  vdp_register(7, 0x1E);
++  vdp_fill(0x1000, 0x5A, 4);
++  card_read(6);
++  card_write(0xE, 0x02);
++  card_write(0xC, 0x77);
++
++  size_t size = 0;
++  peripheral_save_state(card_slot, nullptr, &size);
++  REQUIRE(size > 0);
++  std::vector<uint8_t> blob(size);
++  peripheral_save_state(card_slot, blob.data(), &size);
++
++  vdp_fill(0x1000, 0x00, 4);
++  vdp_register(7, 0x00);
++  card_read(5);
++  card_write(0xE, 0x02);
++  card_write(0xC, 0x00);
++
++  REQUIRE(peripheral_load_state(card_slot, blob.data(), blob.size()) ==
++          peripheral_ok);
++  card_write(1, 0x00);
++  card_write(1, 0x10);  // read setup at 0x1000
++  CHECK(card_read(0) == 0x5A);
++  CHECK(card_read(0) == 0x5A);
++  card_write(0xE, 0x02);
++  CHECK(card_read(0xE) == 0x77);
++
++  // The backdrop register came back (the display is blanked, so the whole
++  // picture is backdrop), and the card mixes again.
++  const auto f = frame_copy();
++  CHECK(at(f, 300, 300) == tms9918a_palette_rgb(0x0E));
++}
+-- 
+2.43.0
+

@@ -11,6 +11,7 @@
 | SmartPort | 슬롯 5. 하드디스크 2개 + UniDisk 3.5 드라이브 2개 |
 | 5.25" | 슬롯 6. Disk II 드라이브 2개 (.dsk .do .po .nib .woz) |
 | 소리 | Mockingboard(슬롯 4) + 스피커, AC'97/HD Audio 등 |
+| SuperSprite | 슬롯 7을 FujiNet 대신 선택. TMS9918A 스프라이트 화면을 애플 화면 위에 합성, AY-3-8912 소리 (Echo II 음성은 미지원) |
 | 네트워크 | 유선 랜 자동(DHCP), 내장 PCI/USB 무선랜은 `wifi.txt`에 이름·비밀번호 |
 
 ## 굽는 법 (Rufus)
@@ -71,6 +72,7 @@ README.TXT        키 안내
 - CONFIG의 Wi-Fi 설정은 실제로는 쓰이지 않습니다. 이 PC의 네트워크(유선 또는 `wifi.txt`)를 그대로 씁니다.
 - 구조상 SmartPort 장치만 다룹니다. 실제 FujiNet의 Disk II(5.25") 에뮬레이션은 없습니다. 5.25" 디스크는 슬롯 6의 Disk II로 쓰세요.
 - FujiNet 없이 로컬 디스크로 바로 부팅하려면 `linapple.conf`에서 `Slot 7 = FujiNet`을 `Slot 7 = None`으로 바꿉니다.
+- SuperSprite 소프트웨어(StarSprite 등)를 쓰려면 `Slot 7 = SuperSprite`로 바꿉니다. 슬롯 7을 함께 쓸 수 없어 그동안 FujiNet은 꺼집니다.
 
 ## SmartPort와 3.5" 디스크
 
