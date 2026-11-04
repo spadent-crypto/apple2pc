@@ -1,4 +1,4 @@
-From 4e9f33a8b3cd80fabe282e9786e07abb3a31ee43 Mon Sep 17 00:00:00 2001
+From 634b769391459a1c76f4f68c85ab65d0bed66db9 Mon Sep 17 00:00:00 2001
 From: build <build@localhost>
 Date: Wed, 4 Nov 2026 15:53:45 +0900
 Subject: [PATCH] sdl1: display settings menu (Alt+F9)
@@ -12,12 +12,12 @@ file named by APPLE2PC_REBOOT_FLAG and quits so the session restarts the
 machine. Without APPLE2PC_DISPLAY_FILE it only shows a short message.
 ---
  CMakeLists.txt                     |   1 +
- src/frontends/sdl1/DisplayMenu.cpp | 499 +++++++++++++++++++++++++++++
+ src/frontends/sdl1/DisplayMenu.cpp | 500 +++++++++++++++++++++++++++++
  src/frontends/sdl1/DisplayMenu.h   |  26 ++
  src/frontends/sdl1/Frame.cpp       |  40 ++-
  src/frontends/sdl1/Frame.h         |   2 +
  tests/test_frontend_sdl1.cpp       |  27 ++
- 6 files changed, 580 insertions(+), 15 deletions(-)
+ 6 files changed, 581 insertions(+), 15 deletions(-)
  create mode 100644 src/frontends/sdl1/DisplayMenu.cpp
  create mode 100644 src/frontends/sdl1/DisplayMenu.h
 
@@ -35,10 +35,10 @@ index 12d2e41e..f3359359 100644
      src/frontends/sdl1/SDL_Asset.cpp
 diff --git a/src/frontends/sdl1/DisplayMenu.cpp b/src/frontends/sdl1/DisplayMenu.cpp
 new file mode 100644
-index 00000000..104d8e4a
+index 00000000..a8e70116
 --- /dev/null
 +++ b/src/frontends/sdl1/DisplayMenu.cpp
-@@ -0,0 +1,499 @@
+@@ -0,0 +1,500 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +// Display settings menu: screen resolution (for the next start), scaling
 +// and monitor shape.
@@ -392,9 +392,10 @@ index 00000000..104d8e4a
 +
 +  std::array<Choice, 3> rows{
 +      Choice{"Resolution",
-+             {"auto", "640x480", "800x600", "1024x768", "1152x864", "1280x800",
-+              "1280x960", "1280x1024", "1366x768", "1400x1050", "1440x900",
-+              "1600x1200", "1680x1050", "1920x1080"},
++             {"auto",      "640x480",   "800x600",   "1024x768",  "1152x768",
++              "1152x864",  "1280x800",  "1280x854",  "1280x960",  "1280x1024",
++              "1366x768",  "1400x1050", "1440x900",  "1440x960",  "1600x1200",
++              "1680x1050", "1920x1080", "1920x1200", "1920x1280", "2160x1440"},
 +             0},
 +      Choice{"Scaling", {"aspect", "sharp"}, 0},
 +      Choice{"Monitor shape", {"auto", "16:9", "16:10", "5:4", "3:2", "4:3"},
