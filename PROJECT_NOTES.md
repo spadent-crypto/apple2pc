@@ -32,6 +32,9 @@
 - SuperSprite를 쓸 때는 `Slot 7 = SuperSprite`, `Slot 5 = SmartPort`
 - LinApple 패치는 그대로 (FujiNet 카드 코드는 패치 3에 남아 있음, 설정에서 안 씀)
 - 네트워크(유선/무선)는 시계(NTP) 맞추기용으로 남김
+- QEMU 확인: 하드 1 + 5.25" 둘 다 넣으면 하드(슬롯 7)로, 하드 없이 5.25"만 넣으면 슬롯 6으로 부팅 (각각 메시지만 찍는 시험용 부트 블록 디스크로 확인)
+- 빌드 고침: busybox `yes | make oldconfig`가 pipefail에서 141로 끝나던 것 수정, genimage.cfg에서 fujinet 폴더 제거
+- 이미지 sha256: img e2458867…, zip fe3ae19f… (2026-11-04 대화에서 전달)
 - 주의: 기존 이미지의 APPLE2 파티션 `linapple.conf`는 첫 부팅 때만 만들어지므로, 옛 이미지를 쓰던 경우 그 파일의 슬롯 줄을 직접 고쳐야 함
 
 ### 추가 (2026-10-24): SuperSprite 카드
