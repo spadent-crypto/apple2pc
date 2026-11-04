@@ -42,6 +42,7 @@
 disks\            디스크 이미지
 saves\            세이브 슬롯 (SaveStateN.aws + SaveStateN.bmp)
 wifi.txt          무선랜 SSID / PASSWORD
+display.txt       화면 설정 (LCD 해상도, 비율/선명함 우선), 재부팅하면 적용
 sound.txt         ISA 사운드 카드 설정
 sound-cards.txt   잡힌 사운드 카드 (부팅마다 새로 적힘)
 linapple.conf     에뮬레이터 설정
@@ -82,6 +83,21 @@ README.TXT        키 안내
 - 3.5" 디스크는 블록 단위로 다룹니다. 복사 방지가 걸린 3.5" 원본(.woz 3.5")은 안 됩니다.
 - 3.5" 드라이브의 이미지는 `linapple.conf`의 `SmartPort 3.5 Image 1/2`에, 하드디스크는 `Harddisk Image 1/2`에 기억됩니다.
 
+## 화면
+
+`APPLE2\display.txt`를 고치고 재부팅하면 적용됩니다.
+
+| 항목 | 값 | 뜻 |
+|---|---|---|
+| `RESOLUTION` | `1024x768`(기본), `800x600`, `1280x1024`, `1280x800` … | LCD 패널의 원래 해상도. GRUB이 부팅할 때 이 파일을 직접 읽어 그 해상도로 켭니다. 그래픽 카드에 없으면 1024x768, 800x600, 640x480 순서로 내려갑니다 |
+| | `auto` | 모니터가 알려주는(EDID) 원래 해상도. 해상도가 높으면 오래된 PC에서 느릴 수 있음 |
+| `PRIORITY` | `aspect`(기본) | 비율 우선: 4:3으로 화면을 가득 채움. 배율이 정수가 아니면 줄 높이가 조금씩 다를 수 있음 |
+| | `sharp` | 선명함 우선: 세로를 정수배로 키워 모든 줄 높이를 같게, 4:3 유지. 그림이 작아지고 테두리가 생길 수 있음 |
+
+예: 800x600 패널 → aspect 800×600 꽉 참, sharp 512×384 가운데 / 1280x1024 → aspect 1280×960, sharp 1024×768 / 1024x768 → 둘 다 1024×768.
+
+와이드 모니터가 4:3 신호를 옆으로 늘려 보여주면 실행 중 **Alt+F6**으로 모니터 모양을 고르세요(`linapple.conf`의 `Monitor Aspect`, 저장됨).
+
 ## 사운드 카드
 
 부팅할 때 `apple2-sound`가 아래 순서로 사운드 카드를 찾습니다. 결과는 `APPLE2\sound-cards.txt`에 적힙니다.
@@ -104,7 +120,7 @@ README.TXT        키 안내
 ## 문제가 생기면
 
 - **에뮬레이터가 오류로 멈추면** 화면에 로그가 나오고 Enter(다시) / p(끄기) / s(셸)를 고를 수 있습니다. 로그는 `APPLE2\linapple.log`에도 남습니다.
-- **화면이 안 나오면** `grub.cfg`의 `gfxpayload`에서 `800x600x16`이나 `640x480x16`을 맨 앞에 두고 다시 만드세요.
+- **화면이 안 나오면** `APPLE2\display.txt`의 `RESOLUTION`을 `800x600`이나 `640x480`으로 바꾸고 다시 켜세요.
 - **소리가 안 나면** Ctrl+Alt+F2 셸에서 `cat /proc/asound/cards`, `amixer`를 확인하세요.
 - **네트워크가 안 되면** 셸에서 `cat /run/net.log`, `ip addr`를 확인하세요.
 - **시계:** 윈도우처럼 BIOS 시계를 현지 시각(한국 시간)으로 읽습니다. 네트워크에 붙으면 인터넷 시간으로 맞추고 BIOS 시계도 고칩니다.
@@ -142,6 +158,6 @@ LinApple 패치:
 3. SmartPort 카드(하드 2 + UniDisk 3.5 2)와 FujiNet 카드(이미지에서는 쓰지 않음), 전체화면 해상도, 세이브 즉시 기록
 4. 넣은 디스크를 다음 부팅 때 그대로 넣기
 5. SuperSprite 카드
-6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 모니터 모양 보정(`Monitor Aspect`, Alt+F6), 전체화면으로 시작할 때도 적용
+6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 모니터 모양 보정(`Monitor Aspect`, Alt+F6), 확대 방식(`Scale Mode` aspect/sharp), 전체화면으로 시작할 때도 적용
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

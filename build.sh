@@ -233,6 +233,7 @@ stage_rootfs() {
 	# our scripts and settings
 	cp -a "$KIT/overlay/." "$ROOT/"
 	cp "$KIT/grub.cfg" "$ROOT/boot/grub/grub.cfg"
+	sed 's/\r*$/\r/' "$KIT/display.txt" >"$ROOT/etc/linapple/display.txt"
 	chmod 755 "$ROOT"/usr/bin/apple2-*
 
 	# every program finds its libraries?
@@ -256,7 +257,8 @@ stage_image() {
 
 	grub-mkimage -d /usr/lib/grub/i386-pc -O i386-pc -o "$img/grub.img" \
 		-p "(hd0,msdos1)/boot/grub" \
-		boot linux ext2 part_msdos normal biosdisk vbe video video_fb
+		boot linux ext2 part_msdos normal biosdisk vbe video video_fb \
+		fat regexp test configfile
 	cp /usr/lib/grub/i386-pc/boot.img "$img/"
 
 	mkfs.ext4 -q -F -L apple2sys -d "$ROOT" "$img/rootfs.ext2" 320M
@@ -269,7 +271,8 @@ stage_image() {
 	cp "$KIT/saves-readme.txt" "$data/saves/README.TXT"
 	cp "$KIT/wifi.txt" "$data/wifi.txt"
 	cp "$KIT/sound.txt" "$data/sound.txt"
-	for f in "$data/linapple.conf" "$data/README.TXT" "$data/saves/README.TXT" "$data/wifi.txt" "$data/sound.txt"; do
+	cp "$KIT/display.txt" "$data/display.txt"
+	for f in "$data/linapple.conf" "$data/README.TXT" "$data/saves/README.TXT" "$data/wifi.txt" "$data/sound.txt" "$data/display.txt"; do
 		sed -i 's/\r*$/\r/' "$f"
 	done
 

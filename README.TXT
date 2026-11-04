@@ -10,16 +10,20 @@ disks\            디스크 이미지를 넣는 곳
 saves\            세이브 슬롯 0~9 (SaveStateN.aws + 저장 순간 화면 SaveStateN.bmp)
 wifi.txt          무선랜 이름과 비밀번호 (시계 맞추기용, 유선 랜만 쓰면 비워 두기)
 linapple.conf     에뮬레이터 설정 (기종, 속도, 슬롯 구성 등)
+display.txt       화면 설정: LCD 해상도(RESOLUTION), 비율/선명함 우선(PRIORITY)
+                  고친 뒤 재부팅하면 적용
 sound.txt         ISA 사운드 카드의 포트/IRQ/DMA 설정 (내장·PCI는 저절로 잡힘)
 sound-cards.txt   부팅할 때 잡힌 사운드 카드 (부팅마다 새로 적힘)
 grow.txt          처음 켤 때 이 파티션을 장치 끝까지 늘린 기록
 
 화면
 ----
-애플 화면은 실기 모니터처럼 4:3으로 보이게 그립니다 (남는 곳은 검게).
-와이드 모니터가 화면을 옆으로 늘려서 퍼져 보이면 Alt+F6으로 모니터 모양을
-고르세요 (linapple.conf의 Monitor Aspect). 모니터 메뉴에서 화면 비율을
-"4:3" 또는 "원본 비율"로 바꾸는 방법도 있습니다 (그때는 auto).
+display.txt에서 LCD 패널의 원래 해상도(RESOLUTION)와 확대 방식(PRIORITY)을
+고르고 재부팅하세요. LCD는 원래 해상도로 켜야 흐려지지 않습니다.
+  PRIORITY=aspect  비율 우선: 실기 모니터처럼 4:3으로 화면을 가득 채움
+  PRIORITY=sharp   선명함 우선: 줄 높이가 모두 같게, 4:3 유지 (그림이 작아질 수 있음)
+와이드 모니터가 화면을 옆으로 늘려 퍼져 보이면 Alt+F6으로 모니터 모양을
+고르세요 (linapple.conf의 Monitor Aspect).
 
 슬롯 구성
 ---------

@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.5 2026-11-04). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.6 2026-11-04). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-04 (v1.5: 모니터 모양 보정 Alt+F6)
+마지막 갱신: 2026-11-04 (v1.6: display.txt로 해상도·확대 방식 선택)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,14 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-04, v1.6): display.txt로 해상도·확대 방식 선택
+- 사용자 요청: 설정에서 LCD 패널 해상도와 "선명함 우선/비율 우선"을 고르고 재부팅하면 적용
+- `APPLE2\display.txt` (CRLF): `RESOLUTION=1024x768|WxH|auto`, `PRIORITY=aspect|sharp`. 주석 줄만 있고 빈 줄은 없게(GRUB이 source하므로)
+- GRUB: `fat regexp test configfile` 모듈을 core 이미지에 넣음 → grub.img가 커져서 **파티션 시작이 267 → 328섹터로 옮겨짐**(PARTUUID는 디스크 서명이라 상관없음). grub.cfg가 `$root`에서 디스크 이름을 뽑아 `(hdN,msdos2)/display.txt`를 source, `regexp '^(auto|[0-9]+x[0-9]+)'`로 값만 꺼냄(줄 끝 CR 무시). WxH면 `WxHx16,WxHx32,` + 기존 목록, auto면 `gfxpayload=auto`(EDID)
+- LinApple 패치 6에 `Scale Mode`(aspect/sharp) 추가: sharp는 높이 = 384의 정수배 중 화면에 들어가는 최대, 폭은 그 높이에 맞는 4:3(Monitor Aspect 반영). 테스트 추가(800x600→512x384@144,108, 1280x1024→1024x768@128,128, 1024x768→꽉 참)
+- apple2-session: display.txt가 없으면 /etc/linapple/display.txt를 복사, PRIORITY를 linapple.conf의 `Scale Mode`로 옮김
+- QEMU 확인(빌드가 만든 CRLF display.txt 그대로): 기본 1024x768 꽉 참 / 800x600 aspect 800x600 / 800x600 sharp 512x384@(144,108) / 1280x1024 sharp 1024x768@(128,128) / auto → QEMU EDID 1280x800, 1066x800@107
 
 ### 추가 (2026-11-04, v1.5): 모니터 모양 보정
 - 사용자 요청: "사람이 보는 관점에서 해상도와 화면 비율 무관하게 실기 비율만 맞춰주면 돼"
@@ -153,7 +161,7 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 
 - [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드 카드(`sound-cards.txt`), 무선랜 칩 모델)
 - [ ] (선택) 맥 QEMU 확인용 저해상도(640x480) 부팅 옵션
-- [ ] (선택) GRUB 해상도 목록에 와이드 해상도(1280x800, 1440x900, 1366x768 등)를 1024x768보다 앞에 (실기 속도 확인 후)
+- [ ] 실기에서 해상도별 속도 확인 (특히 auto·1280x1024 이상)
 - [ ] LinApple 기존 테스트 실패(Alt+1 quick-save 이름) 원인 확인
 - [ ] 무선랜 칩 모델 확인 → 필요한 드라이버·펌웨어 추가
 - [ ] 부팅 시간 측정·단축 (커널 크기, 서비스 순서)

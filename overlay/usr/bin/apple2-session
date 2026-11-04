@@ -38,6 +38,22 @@ fi
 mkdir -p "$DATA/disks" "$DATA/saves" "$DATA/.home"
 [ -f "$CONF" ] || cp /etc/linapple/linapple.conf "$CONF"
 
+# Screen settings, APPLE2/display.txt: RESOLUTION is read by GRUB at boot,
+# PRIORITY (aspect or sharp) goes into linapple.conf here.
+[ -f "$DATA/display.txt" ] || cp /etc/linapple/display.txt "$DATA/display.txt"
+prio=$(tr -d '\r' <"$DATA/display.txt" 2>/dev/null |
+	sed -n 's/^[[:space:]]*PRIORITY[[:space:]]*=[[:space:]]*\([A-Za-z]*\).*/\1/p' |
+	head -n 1 | tr 'A-Z' 'a-z')
+case $prio in
+sharp) mode=sharp ;;
+*) mode=aspect ;;
+esac
+if grep -q '^Scale Mode' "$CONF"; then
+	sed -i "s/^Scale Mode[ \t]*=.*/Scale Mode = $mode\r/" "$CONF"
+else
+	sed -i "/^Screen Height[ \t]*=/a Scale Mode = $mode\r" "$CONF"
+fi
+
 # The network comes up on its own (for the clock); the Apple boots meanwhile.
 /usr/bin/apple2-net &
 
