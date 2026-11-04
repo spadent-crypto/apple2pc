@@ -5,7 +5,7 @@
 
 | 기능 | 내용 |
 |---|---|
-| 바로 부팅 | GRUB 메뉴·대기 없음, 커널 메시지 숨김, 화면 해상도에 맞춰 전체화면 |
+| 바로 부팅 | GRUB 메뉴·대기 없음, 커널 메시지 숨김, 화면 해상도에 맞춰 전체화면. 애플 화면은 실기 모니터처럼 4:3으로, 남는 부분은 검게 (`linapple.conf`의 `Full Screen Aspect`로 `pixel`·`stretch`·`W:H`도 가능) |
 | 세이브 | Ctrl+Shift+0~9 저장(화면 캡처 함께), Ctrl+0~9 불러오기, F11/F10 썸네일 화면 |
 | SmartPort | 슬롯 7. 하드디스크 2개 + UniDisk 3.5 드라이브 2개. 먼저 부팅하고, 비어 있으면 5.25"로 넘어감 |
 | 5.25" | 슬롯 6. Disk II 드라이브 2개 (.dsk .do .po .nib .woz) |
@@ -128,7 +128,7 @@ Ubuntu 24.04 x86_64에서 root로 `./build.sh`를 실행하면 `out/apple2pc.img
 ```
 kernel/linux-fragment.config   커널 설정 (i386_defconfig 위에 덮어씀)
 busybox/busybox.config         busybox 설정 (정적 빌드)
-linapple/*.patch               LinApple 패치 5개
+linapple/*.patch               LinApple 패치 6개
 wpa/wpa_supplicant.config      wpa_supplicant 빌드 설정
 overlay/                       inittab, 부팅·네트워크 스크립트, 기본 설정
 grub.cfg, genimage.cfg         부트로더, 디스크 구성
@@ -141,5 +141,6 @@ LinApple 패치:
 3. SmartPort 카드(하드 2 + UniDisk 3.5 2)와 FujiNet 카드(이미지에서는 쓰지 않음), 전체화면 해상도, 세이브 즉시 기록
 4. 넣은 디스크를 다음 부팅 때 그대로 넣기
 5. SuperSprite 카드
+6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 전체화면으로 시작할 때도 적용
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

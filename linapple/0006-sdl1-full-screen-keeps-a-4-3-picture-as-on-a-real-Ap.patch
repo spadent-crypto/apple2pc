@@ -1,0 +1,187 @@
+From 8ce42d2efc2ee1d8e57015e792de3448d8b4459e Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Wed, 4 Nov 2026 15:05:38 +0900
+Subject: [PATCH] sdl1: full screen keeps a 4:3 picture, as on a real Apple II
+ monitor
+
+'Full Screen Aspect' in linapple.conf sets the shape the picture keeps in
+full screen: 4:3 (default; the 560x384 picture with taller-than-wide
+pixels, as a real Apple II monitor or TV showed it), pixel (square
+pixels, 560:384), stretch (fill the screen) or any W:H. The rest of the
+screen stays black with the picture in the middle.
+
+Started full screen (-f), the picture used to fill the whole screen
+whatever its shape; it now gets the same fit as switching to full screen
+later.
+---
+ src/frontends/sdl1/Frame.cpp | 66 +++++++++++++++++++++++++++++++++---
+ tests/test_frontend_sdl1.cpp | 49 +++++++++++++++++++++++---
+ 2 files changed, 107 insertions(+), 8 deletions(-)
+
+diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
+index ae562afe..baa56ca8 100644
+--- a/src/frontends/sdl1/Frame.cpp
++++ b/src/frontends/sdl1/Frame.cpp
+@@ -13,6 +13,7 @@
+ #include <SDL/SDL_video.h>
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
+@@ -220,12 +221,63 @@ auto handle_btn_cycle(int mod) -> void {
+   video_redraw_screen();
+ }
+ 
++// The shape the Apple picture keeps in full screen, from "Full Screen Aspect"
++// in linapple.conf:
++//   4:3      (default) as on the monitor or TV a real Apple II was used with;
++//            the 560x384 picture is drawn with taller-than-wide pixels
++//   pixel    square pixels, 560:384 (a little wider than 4:3)
++//   stretch  fill the whole screen
++//   W:H      any other shape, e.g. 3:2
++// What is left of the screen stays black, with the picture in the middle.
++struct FullScreenAspect {
++  int w = 4;
++  int h = 3;
++  bool stretch = false;
++};
++
++auto full_screen_aspect() -> FullScreenAspect {
++  FullScreenAspect aspect;
++  std::string value;
++  if (!config_load_string("Configuration", "Full Screen Aspect", &value)) {
++    return aspect;
++  }
++  value.erase(std::remove_if(value.begin(), value.end(),
++                             [](unsigned char c) { return c == ' ' || c == '\t' || c == '\r'; }),
++              value.end());
++  std::transform(value.begin(), value.end(), value.begin(),
++                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  if (value == "stretch") {
++    aspect.stretch = true;
++  } else if (value == "pixel") {
++    aspect.w = SCREEN_WIDTH;
++    aspect.h = SCREEN_HEIGHT;
++  } else {
++    int w = 0;
++    int h = 0;
++    if (std::sscanf(value.c_str(), "%d:%d", &w, &h) == 2 && w > 0 && h > 0 &&
++        w <= 100 && h <= 100) {
++      aspect.w = w;
++      aspect.h = h;
++    }
++  }
++  return aspect;
++}
++
+ auto compute_aspect_fit_rect(int width, int height) noexcept -> SDL_Rect {
++  FullScreenAspect aspect;
++  try {
++    aspect = full_screen_aspect();
++  } catch (...) {
++  }
++  if (aspect.stretch) {
++    return SDL_Rect{0, 0, static_cast<uint16_t>(width),
++                    static_cast<uint16_t>(height)};
++  }
+   int target_w = width;
+-  int target_h = (target_w * SCREEN_HEIGHT) / SCREEN_WIDTH;
++  int target_h = (target_w * aspect.h) / aspect.w;
+   if (target_h > height) {
+     target_h = height;
+-    target_w = (target_h * SCREEN_WIDTH) / SCREEN_HEIGHT;
++    target_w = (target_h * aspect.w) / aspect.h;
+   }
+   const int offset_x = (width - target_w) / 2;
+   const int offset_y = (height - target_h) / 2;
+@@ -925,9 +977,15 @@ auto frame_create_window() -> int {
+          system_state.screen_height);
+   if (window_resized) {
+     orig_rect = SDL_Rect{0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
++    // Started full screen: keep the picture's shape ("Full Screen Aspect"),
++    // as a later switch to full screen does.
+     new_rect =
+-        SDL_Rect{0, 0, static_cast<uint16_t>(system_state.screen_width),
+-                 static_cast<uint16_t>(system_state.screen_height)};
++        is_fullscreen
++            ? compute_aspect_fit_rect(
++                  static_cast<int>(system_state.screen_width),
++                  static_cast<int>(system_state.screen_height))
++            : SDL_Rect{0, 0, static_cast<uint16_t>(system_state.screen_width),
++                       static_cast<uint16_t>(system_state.screen_height)};
+   }
+   return 0;
+ }
+diff --git a/tests/test_frontend_sdl1.cpp b/tests/test_frontend_sdl1.cpp
+index 44f4bb44..a99e8e35 100644
+--- a/tests/test_frontend_sdl1.cpp
++++ b/tests/test_frontend_sdl1.cpp
+@@ -108,11 +108,12 @@ TEST_CASE("SDL1 Frontend Fullscreen Toggle Preserves Scaled Dimensions") {
+   CHECK(screen->w == 1920);
+   CHECK(screen->h == 1080);
+ 
+-  // In 1920x1080 fullscreen, 4:3 / 560x384 aspect ratio should be preserved
+-  // target_w = 1575, target_h = 1080, offset_x = (1920 - 1575) / 2 = 172
+-  CHECK(new_rect.w == 1575);
++  // In 1920x1080 fullscreen the picture keeps the 4:3 shape of a real Apple
++  // II monitor ("Full Screen Aspect" unset):
++  // target_w = 1440, target_h = 1080, offset_x = (1920 - 1440) / 2 = 240
++  CHECK(new_rect.w == 1440);
+   CHECK(new_rect.h == 1080);
+-  CHECK(new_rect.x == 172);
++  CHECK(new_rect.x == 240);
+   CHECK(new_rect.y == 0);
+ 
+   // 3. Return to windowed mode (F6)
+@@ -133,6 +134,46 @@ TEST_CASE("SDL1 Frontend Fullscreen Toggle Preserves Scaled Dimensions") {
+   SDL_Quit();
+ }
+ 
++TEST_CASE("SDL1 Frontend started full screen keeps the picture's shape") {
++  SDL_putenv(const_cast<char*>("SDL_VIDEODRIVER=dummy"));
++  int init_result = SDL_Init(SDL_INIT_VIDEO);
++  REQUIRE(init_result == 0);
++  REQUIRE(asset_init());
++
++  // A 16:10 screen, started full screen (-f), "Full Screen Aspect" unset:
++  // a 4:3 picture in the middle, 1066x800 at x = (1280 - 1066) / 2 = 107.
++  system_state.screen_width = 1280;
++  system_state.screen_height = 800;
++  system_state.fullscreen = true;
++  REQUIRE(frame_create_window() == 0);
++  CHECK(new_rect.w == 1066);
++  CHECK(new_rect.h == 800);
++  CHECK(new_rect.x == 107);
++  CHECK(new_rect.y == 0);
++  frame_destroy_window();
++
++  // "pixel": square pixels, 560:384 -> 1166x800 at x = 57.
++  config_set_string("Configuration", "Full Screen Aspect", "pixel");
++  REQUIRE(frame_create_window() == 0);
++  CHECK(new_rect.w == 1166);
++  CHECK(new_rect.h == 800);
++  CHECK(new_rect.x == 57);
++  frame_destroy_window();
++
++  // "stretch": the whole screen.
++  config_set_string("Configuration", "Full Screen Aspect", "stretch");
++  REQUIRE(frame_create_window() == 0);
++  CHECK(new_rect.w == 1280);
++  CHECK(new_rect.h == 800);
++  CHECK(new_rect.x == 0);
++  frame_destroy_window();
++
++  config_set_string("Configuration", "Full Screen Aspect", "4:3");
++  system_state.fullscreen = false;
++  asset_quit();
++  SDL_Quit();
++}
++
+ TEST_CASE("SDL1 Frontend Help Screen Quit Event Handling") {
+   SDL_putenv(const_cast<char*>("SDL_VIDEODRIVER=dummy"));
+   int init_result = SDL_Init(SDL_INIT_VIDEO);
+-- 
+2.43.0
+
