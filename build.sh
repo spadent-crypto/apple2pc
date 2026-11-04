@@ -197,6 +197,12 @@ stage_rootfs() {
 	mkdir -p "$ROOT/usr/share/linapple"
 	cp "$WORK/src/linapple/res/icon.bmp" "$WORK/src/linapple/res/Master.dsk" "$ROOT/usr/share/linapple/"
 	cp -a "$P32"/lib/lib{SDL-1.2,zip,z}.so* "$ROOT/usr/lib/"
+	# resizepart (util-linux) and mkfs.fat (dosfstools) for apple2-grow
+	local t=$WORK/debs/tools
+	rm -rf "$t" && mkdir -p "$t"
+	(cd "$t" && apt-get download -q util-linux:i386 dosfstools:i386)
+	for f in "$t"/*.deb; do dpkg-deb -x "$f" "$t/x"; done
+	install -m 755 "$t/x/usr/bin/resizepart" "$t/x/usr/sbin/mkfs.fat" "$ROOT/usr/sbin/"
 	install -m 755 "$WORK/src/wpa-$WPA_VERSION/wpa_supplicant/wpa_supplicant" \
 		"$WORK/src/wpa-$WPA_VERSION/wpa_supplicant/wpa_cli" "$ROOT/usr/sbin/"
 
@@ -231,7 +237,7 @@ stage_rootfs() {
 
 	# every program finds its libraries?
 	local missing=0
-	for b in "$ROOT/usr/bin/linapple" "$ROOT/usr/sbin/wpa_supplicant" "$ROOT/usr/bin/amixer"; do
+	for b in "$ROOT/usr/bin/linapple" "$ROOT/usr/sbin/wpa_supplicant" "$ROOT/usr/sbin/resizepart" "$ROOT/usr/sbin/mkfs.fat" "$ROOT/usr/bin/amixer"; do
 		for lib in $(readelf -d "$b" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
 			if ! find "$ROOT/lib" "$ROOT/usr/lib" -name "$lib" | grep -q .; then
 				echo "missing for $(basename "$b"): $lib"; missing=1

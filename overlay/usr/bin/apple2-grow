@@ -1,0 +1,100 @@
+#!/bin/sh
+# Grow the APPLE2 data partition to the end of the disk, once.
+#
+# The image is about 600MB; written to a bigger USB stick or disk, the rest
+# is left empty. When the APPLE2 partition is the last primary partition and
+# at least 64MB lie free after it, its files are copied to RAM, the
+# partition is made to reach the end of the disk (MBR entry, then the
+# kernel is told with resizepart), a new FAT32 is made on it and the files
+# go back. With more files than RAM can hold it does nothing and says why
+# in APPLE2/grow.txt.
+#
+# Usage: apple2-grow /dev/sdXN   (not mounted)
+
+DEV=$1
+LOG=/run/grow.log
+exec >>"$LOG" 2>&1
+
+[ -b "$DEV" ] || exit 0
+part=${DEV##*/}
+sys=/sys/class/block/$part
+[ -r "$sys/partition" ] || exit 0
+n=$(cat "$sys/partition")
+disk=$(basename "$(dirname "$(readlink -f "$sys")")")
+[ -b "/dev/$disk" ] || exit 0
+
+start=$(cat "$sys/start")
+size=$(cat "$sys/size")
+total=$(cat "/sys/block/$disk/size")
+end=$((start + size))
+min_free=$((64 * 1024 * 2))      # 64MB in 512-byte sectors
+
+echo "$DEV: partition $n of $disk, start $start, size $size, disk $total"
+
+# Only an MBR primary partition, the last one, with room after it.
+[ "$n" -ge 1 ] && [ "$n" -le 4 ] || exit 0
+[ $((total - end)) -ge $min_free ] || { echo "no free space after it"; exit 0; }
+for p in /sys/block/"$disk"/"$disk"*; do
+	[ -r "$p/start" ] || continue
+	[ "$(cat "$p/start")" -gt "$start" ] && { echo "${p##*/} lies after it"; exit 0; }
+done
+
+# Read 4 little-endian bytes of sector 0 as a number.
+mbr_u32() {
+	dd if="/dev/$disk" bs=1 skip="$1" count=4 2>/dev/null | od -An -tu4 | tr -d ' \n'
+}
+sig=$(dd if="/dev/$disk" bs=1 skip=510 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+entry=$((446 + 16 * (n - 1)))
+[ "$sig" = 55aa ] || { echo "no MBR signature ($sig)"; exit 0; }
+[ "$(mbr_u32 $((entry + 8)))" = "$start" ] || { echo "MBR entry does not match"; exit 0; }
+[ "$(mbr_u32 $((entry + 12)))" = "$size" ] || { echo "MBR size does not match"; exit 0; }
+
+# Room in RAM for the files?
+OLD=/run/grow-old
+SAVE=/run/grow-save
+mkdir -p "$OLD" "$SAVE"
+mount -t vfat -o ro "$DEV" "$OLD" || { echo "cannot mount"; exit 0; }
+used=$(du -sk "$OLD" | cut -f1)
+avail=$(sed -n 's/^MemAvailable: *\([0-9]*\).*/\1/p' /proc/meminfo)
+if [ $((used * 2 + 65536)) -gt "$avail" ]; then
+	echo "files ${used}K, RAM ${avail}K: too many files to move, not growing."
+	echo "Move some files off the APPLE2 partition, start once, and put them back."
+	umount "$OLD"
+	mount -t vfat -o rw "$DEV" "$OLD" && sed 's/$/\r/' "$LOG" >"$OLD/grow.txt" && umount "$OLD"
+	exit 0
+fi
+
+printf '\033c\n  Making the APPLE2 partition fill the whole disk (first start only)...\n' >/dev/tty1
+
+mount -t tmpfs -o size=$((used + 32768))k tmpfs "$SAVE" &&
+	cp -a "$OLD/." "$SAVE/" || { echo "copy to RAM failed"; umount "$OLD"; umount "$SAVE"; exit 0; }
+label=$(blkid "$DEV" | sed -n 's/.*UUID="\([0-9A-Fa-f]*\)-\([0-9A-Fa-f]*\)".*/\1\2/p')
+umount "$OLD"
+
+new=$((total - start))
+# The new size into the MBR entry, little-endian.
+b() { printf "\\$(printf '%03o' $(( ($new >> $1) & 255 )))"; }
+{ b 0; b 8; b 16; b 24; } | dd of="/dev/$disk" bs=1 seek=$((entry + 12)) count=4 conv=notrunc 2>/dev/null
+sync
+if [ "$(mbr_u32 $((entry + 12)))" != "$new" ]; then
+	echo "MBR write failed"
+	umount "$SAVE"; exit 0
+fi
+resizepart "/dev/$disk" "$n" "$new" || echo "resizepart failed (the new size counts after a restart)"
+sleep 1
+echo "partition now $(cat "$sys/size") sectors"
+
+restore() {
+	mount -t vfat -o rw,flush "$DEV" "$OLD" && cp -a "$SAVE/." "$OLD/" && sync && umount "$OLD"
+}
+
+if mkfs.fat -F 32 -n APPLE2 ${label:+-i $label} "$DEV"; then
+	restore && echo "done: APPLE2 is now $(( $(cat "$sys/size") / 2048 )) MB"
+else
+	echo "mkfs failed; putting the files back on the old file system"
+	restore
+fi
+umount "$SAVE"
+mount -t vfat -o rw "$DEV" "$OLD" && sed 's/$/\r/' "$LOG" >"$OLD/grow.txt" && umount "$OLD"
+printf '\033c' >/dev/tty1
+exit 0

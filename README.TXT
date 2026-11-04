@@ -12,6 +12,7 @@ wifi.txt          무선랜 이름과 비밀번호 (시계 맞추기용, 유선 
 linapple.conf     에뮬레이터 설정 (기종, 속도, 슬롯 구성 등)
 sound.txt         ISA 사운드 카드의 포트/IRQ/DMA 설정 (내장·PCI는 저절로 잡힘)
 sound-cards.txt   부팅할 때 잡힌 사운드 카드 (부팅마다 새로 적힘)
+grow.txt          처음 켤 때 이 파티션을 장치 끝까지 늘린 기록
 
 슬롯 구성
 ---------

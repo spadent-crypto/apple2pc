@@ -27,6 +27,8 @@ find_data_dev() {
 
 mkdir -p "$DATA"
 DEV=$(find_data_dev)
+# Written to a bigger disk, the APPLE2 partition grows to fill it (once).
+[ -n "$DEV" ] && /usr/bin/apple2-grow "$DEV"
 if [ -z "$DEV" ] || ! mount -t vfat -o rw,noatime,flush,umask=000,shortname=mixed,time_offset=540 "$DEV" "$DATA"; then
 	# No data partition: run anyway, but nothing is kept after power-off.
 	mount -t tmpfs -o size=64m tmpfs "$DATA"

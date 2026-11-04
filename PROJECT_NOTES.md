@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1·v1.2 2026-11-04). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.3 2026-11-04). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-04 (v1.2: PCI·ISA 사운드 카드 확장)
+마지막 갱신: 2026-11-04 (v1.3: APPLE2 파티션 자동 확장)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,13 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-04, v1.3): APPLE2 파티션 자동 확장
+- 사용자 요청: 4GB USB에 쓰면 남는 공간을 APPLE2가 쓰게
+- `overlay/usr/bin/apple2-grow` (apple2-session이 마운트 전에 실행): APPLE2가 마지막 MBR 기본 파티션이고 뒤에 64MB 이상 비어 있으면 → 파일을 tmpfs로 복사(파일 크기×2+64MB가 MemAvailable보다 크면 건너뜀) → MBR 파티션 항목의 크기를 busybox dd로 직접 고침(시작·크기가 sysfs와 맞는지 먼저 확인) → `resizepart`로 커널에 알림(루트가 같은 디스크에 마운트돼 있어도 BLKPG로 됨) → `mkfs.fat -F 32 -n APPLE2`(볼륨 ID 유지) → 파일 되돌림. 로그는 `APPLE2\grow.txt`
+- 추가 바이너리: util-linux의 `resizepart`, dosfstools의 `mkfs.fat` (둘 다 libc만 필요). sfdisk는 readline 등 라이브러리가 많아 안 씀
+- QEMU 확인: 이미지를 2GB로 늘려 부팅 → APPLE2 256MB → 1.7GB, disks 안 파일·설정 유지, LinApple 정상 시작. 두 번째 부팅은 아무것도 안 함
+- README의 "윈도우 디스크 관리로 늘리면 된다"는 틀린 안내(디스크 관리는 FAT32 확장 불가)를 고침
 
 ### 추가 (2026-11-04, v1.2): 사운드 카드 확장
 - 사용자 요청: "PCI 카드 지원은 충분하게, ISA 카드도 기존 포트와 IRQ 설정을 기준으로 동작하게"
