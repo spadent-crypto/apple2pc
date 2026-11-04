@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds apple2pc.img: a disk image for a legacy-BIOS PC (Windows XP era)
-# that boots straight into an Apple //e (LinApple) with FujiNet, a SmartPort
-# card (hard disks, UniDisk 3.5), a Disk II and a Mockingboard.
+# that boots straight into an Apple //e (LinApple) with a SmartPort card
+# (hard disks, UniDisk 3.5), a Disk II and a Mockingboard.
 #
 # Host: Ubuntu 24.04 x86_64, as root, with Internet access to
 # archive.ubuntu.com and github.com. Everything for the target is 32-bit
@@ -11,7 +11,7 @@
 #   ./build.sh            all stages
 #   ./build.sh image      only re-assemble the image from what is built
 #
-# Stages: deps sources kernel busybox libs linapple fujinet wpa rootfs image
+# Stages: deps sources kernel busybox libs linapple wpa rootfs image
 set -euo pipefail
 
 KIT=$(cd "$(dirname "$0")" && pwd)
@@ -28,7 +28,6 @@ SDLIMAGE_COMMIT=2ffb2e3e1eba037897164e3ac6c67570d8bccd79
 ZLIB_TAG=v1.3.1
 LIBZIP_TAG=v1.11.4
 LINAPPLE_COMMIT=86bee1c2b59bd4706185ceddddaf383b3416726f
-FUJINET_COMMIT=d85ec00a2026a8c52385f477a9ad94bfc011653e
 WPA_VERSION=2.11
 
 CFLAGS32="-m32 -march=i686 -mtune=generic -O2"
@@ -69,10 +68,6 @@ stage_sources() {
 		clone https://github.com/linappleii/linapple.git linapple "$LINAPPLE_COMMIT"
 		git -C "$WORK/src/linapple" -c user.name=build -c user.email=build@localhost \
 			am -q "$KIT"/linapple/*.patch
-	fi
-	if [ ! -d "$WORK/src/fujinet/.git" ]; then
-		git clone -q https://github.com/FujiNetWIFI/fujinet-firmware.git "$WORK/src/fujinet"
-		git -C "$WORK/src/fujinet" checkout -q "$FUJINET_COMMIT"
 	fi
 	if [ ! -d "$WORK/src/wpa-$WPA_VERSION" ]; then
 		curl -sSf -o "$WORK/src/wpa.tar.xz" \
@@ -138,21 +133,6 @@ stage_linapple() {
 	cmake --build "$WORK/build/linapple" -j"$JOBS"
 }
 
-stage_fujinet() {
-	log "FujiNet-PC (Apple, 32-bit)"
-	cmake -S "$WORK/src/fujinet" -B "$WORK/build/fujinet" -DFUJINET_TARGET=APPLE \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_C_FLAGS="$CFLAGS32" -DCMAKE_CXX_FLAGS="$CFLAGS32" \
-		-DCMAKE_EXE_LINKER_FLAGS=-m32 -DCMAKE_SHARED_LINKER_FLAGS=-m32 \
-		-DCMAKE_LIBRARY_ARCHITECTURE=i386-linux-gnu \
-		-DMBEDTLS_INCLUDE_DIR=/usr/include -DMBEDTLS_LIBRARY_DIR=/usr/lib/i386-linux-gnu \
-		-DOPENSSL_ROOT_DIR=/usr \
-		-DOPENSSL_CRYPTO_LIBRARY=/usr/lib/i386-linux-gnu/libcrypto.so \
-		-DOPENSSL_SSL_LIBRARY=/usr/lib/i386-linux-gnu/libssl.so
-	cmake --build "$WORK/build/fujinet" -j"$JOBS"
-	cmake --build "$WORK/build/fujinet" --target dist
-}
-
 stage_wpa() {
 	log "wpa_supplicant (32-bit)"
 	local w=$WORK/src/wpa-$WPA_VERSION/wpa_supplicant
@@ -184,7 +164,7 @@ brcm/bcm43xx-0.fw brcm/bcm43xx_hdr-0.fw regulatory.db regulatory.db.p7s"
 stage_rootfs() {
 	log "root filesystem"
 	rm -rf "$ROOT"
-	mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,usr/lib/firmware,usr/share,etc,proc,sys,dev,run,tmp,root,var,media/apple2,boot/grub,opt/fujinet,etc/fujinet}
+	mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,usr/lib/firmware,usr/share,etc,proc,sys,dev,run,tmp,root,var,media/apple2,boot/grub}
 	ln -s usr/lib "$ROOT/lib"            # merged /usr, as Ubuntu's packages expect
 	ln -s /tmp "$ROOT/var/tmp"
 	ln -s /run "$ROOT/var/run"
@@ -216,8 +196,6 @@ stage_rootfs() {
 	mkdir -p "$ROOT/usr/share/linapple"
 	cp "$WORK/src/linapple/res/icon.bmp" "$WORK/src/linapple/res/Master.dsk" "$ROOT/usr/share/linapple/"
 	cp -a "$P32"/lib/lib{SDL-1.2,zip,z}.so* "$ROOT/usr/lib/"
-	install -m 755 "$WORK/build/fujinet/dist/fujinet" "$ROOT/opt/fujinet/fujinet"
-	cp -r "$WORK/build/fujinet/dist/data" "$ROOT/opt/fujinet/"
 	install -m 755 "$WORK/src/wpa-$WPA_VERSION/wpa_supplicant/wpa_supplicant" \
 		"$WORK/src/wpa-$WPA_VERSION/wpa_supplicant/wpa_cli" "$ROOT/usr/sbin/"
 
@@ -247,13 +225,12 @@ stage_rootfs() {
 
 	# our scripts and settings
 	cp -a "$KIT/overlay/." "$ROOT/"
-	cp "$KIT/fujinet/fnconfig.ini" "$ROOT/etc/fujinet/fnconfig.ini"
 	cp "$KIT/grub.cfg" "$ROOT/boot/grub/grub.cfg"
 	chmod 755 "$ROOT"/usr/bin/apple2-*
 
 	# every program finds its libraries?
 	local missing=0
-	for b in "$ROOT/usr/bin/linapple" "$ROOT/opt/fujinet/fujinet" "$ROOT/usr/sbin/wpa_supplicant" "$ROOT/usr/bin/amixer"; do
+	for b in "$ROOT/usr/bin/linapple" "$ROOT/usr/sbin/wpa_supplicant" "$ROOT/usr/bin/amixer"; do
 		for lib in $(readelf -d "$b" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
 			if ! find "$ROOT/lib" "$ROOT/usr/lib" -name "$lib" | grep -q .; then
 				echo "missing for $(basename "$b"): $lib"; missing=1
@@ -279,13 +256,12 @@ stage_image() {
 
 	# What the APPLE2 data partition holds the first time.
 	local data=$img/apple2-data
-	mkdir -p "$data/disks" "$data/saves" "$data/fujinet/SD"
+	mkdir -p "$data/disks" "$data/saves"
 	cp "$KIT/overlay/etc/linapple/linapple.conf" "$data/linapple.conf"
-	cp "$KIT/fujinet/fnconfig.ini" "$data/fujinet/fnconfig.ini"
 	cp "$KIT/README.TXT" "$data/README.TXT"
 	cp "$KIT/saves-readme.txt" "$data/saves/README.TXT"
 	cp "$KIT/wifi.txt" "$data/wifi.txt"
-	for f in "$data/linapple.conf" "$data/README.TXT" "$data/saves/README.TXT" "$data/wifi.txt" "$data/fujinet/fnconfig.ini"; do
+	for f in "$data/linapple.conf" "$data/README.TXT" "$data/saves/README.TXT" "$data/wifi.txt"; do
 		sed -i 's/\r*$/\r/' "$f"
 	done
 
@@ -301,6 +277,6 @@ stage_image() {
 	ls -la "$OUT"
 }
 
-ALL="deps sources kernel busybox libs linapple fujinet wpa rootfs image"
+ALL="deps sources kernel busybox libs linapple wpa rootfs image"
 STAGES=${*:-$ALL}
 for s in $STAGES; do "stage_$s"; done

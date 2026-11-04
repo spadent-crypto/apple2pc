@@ -1,5 +1,5 @@
 #!/bin/sh
-# Mount the APPLE2 data partition, start the network and FujiNet-PC in the
+# Mount the APPLE2 data partition, start the network (clock) in the
 # background, fit the picture to the screen, run LinApple full screen, and
 # power off when it ends (F12).
 
@@ -33,13 +33,11 @@ if [ -z "$DEV" ] || ! mount -t vfat -o rw,noatime,flush,umask=000,shortname=mixe
 	NO_DATA=1
 fi
 
-mkdir -p "$DATA/disks" "$DATA/saves" "$DATA/fujinet/SD" "$DATA/.home"
+mkdir -p "$DATA/disks" "$DATA/saves" "$DATA/.home"
 [ -f "$CONF" ] || cp /etc/linapple/linapple.conf "$CONF"
 
-# Network and FujiNet-PC come up on their own; the Apple boots meanwhile
-# and its FujiNet card waits a few seconds for FujiNet-PC.
+# The network comes up on its own (for the clock); the Apple boots meanwhile.
 /usr/bin/apple2-net &
-/usr/bin/apple2-fujinet &
 
 # Fit the emulator to whatever mode GRUB gave the framebuffer.
 if [ -r /sys/class/graphics/fb0/virtual_size ]; then
@@ -80,11 +78,10 @@ if [ $rc -ne 0 ]; then
 	case "$answer" in
 		p|P) poweroff ;;
 		s|S) exec /bin/sh ;;
-		*) killall fujinet apple2-fujinet 2>/dev/null; umount "$DATA" 2>/dev/null; exec "$0" ;;
+		*) umount "$DATA" 2>/dev/null; exec "$0" ;;
 	esac
 fi
 
-killall apple2-fujinet fujinet 2>/dev/null
 sync
 umount "$DATA" 2>/dev/null
 poweroff

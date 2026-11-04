@@ -5,14 +5,14 @@
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
 > 완성 이미지(apple2pc.img.zip)는 저장소에 넣지 않습니다. v1.0 이미지는 2026-10-20 대화에서 전달됨.
 
-마지막 갱신: 2026-10-24 (SuperSprite 카드 추가)
+마지막 갱신: 2026-11-04 (FujiNet 제거, SmartPort를 슬롯 7로)
 
 ## 1. 목표 (사용자 요구사항)
 
 - 레거시 BIOS 구형 PC(윈도우 XP 시절, SATA일 수도 있음, AC'97, 내장 PCI 무선랜)에 설치
 - 전원을 켜면 Apple II처럼 중간 화면 없이 빠르게 부팅
 - 핫키로 화면 캡처와 함께 세이브 스테이트 저장·불러오기
-- FujiNet 지원
+- ~~FujiNet 지원~~ → 2026-11-04 사용자 요청으로 제거. 로컬 플로피·하드 이미지만 사용
 - SmartPort 하드, UniDisk 3.5, 5.25"/3.5" 플로피 지원
 - Rufus로 구울 수 있는 이미지
 
@@ -22,9 +22,17 @@
 - `apple2pc.img` (약 600MB, zip 29MB): MBR, 1번 ext4 시스템(읽기 전용 마운트), 2번 FAT32 `APPLE2` 데이터
 - GRUB 메뉴 없음 → 커널 quiet → LinApple 전체화면 (프레임버퍼, X 없음) → F12로 전원 꺼짐
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
-- 슬롯 7 FujiNet(FujiNet-PC가 같은 PC에서 실행), 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard
+- (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
-- FujiNet 웹 설정: `http://IP:8000`
+
+### 변경 (2026-11-04): FujiNet 제거
+- 사용자 요청: "FujiNet 기능을 삭제하고 플로피와 HDD에 디스크 이미지 마운트해서 사용하는 것만"
+- 이미지에서 FujiNet-PC 빌드·설치·실행 제거 (`build.sh` fujinet 단계, `overlay/usr/bin/apple2-fujinet`, `fujinet/fnconfig.ini`, 데이터 파티션 `fujinet\` 폴더)
+- 슬롯: **7 SmartPort**(하드 2 + UniDisk 3.5 2), 6 Disk II, 5 비움, 4 Mockingboard. 부팅 순서 = 하드 1 → (비어 있으면, 펌웨어가 다음 슬롯으로 넘김) 5.25" 드라이브 1
+- SuperSprite를 쓸 때는 `Slot 7 = SuperSprite`, `Slot 5 = SmartPort`
+- LinApple 패치는 그대로 (FujiNet 카드 코드는 패치 3에 남아 있음, 설정에서 안 씀)
+- 네트워크(유선/무선)는 시계(NTP) 맞추기용으로 남김
+- 주의: 기존 이미지의 APPLE2 파티션 `linapple.conf`는 첫 부팅 때만 만들어지므로, 옛 이미지를 쓰던 경우 그 파일의 슬롯 줄을 직접 고쳐야 함
 
 ### 추가 (2026-10-24): SuperSprite 카드
 - Synetix SuperSprite를 LinApple 카드로 구현 (패치 5). `linapple.conf`의 `Slot 7 = SuperSprite`로 고름 (그동안 FujiNet 꺼짐)
@@ -50,10 +58,9 @@
 ### 알려진 한계
 - SuperSprite: VDP 화면은 VBL마다 한 번 통째로 그림 (프레임 중간 레지스터 변경은 다음 프레임에 반영). 실기처럼 애플 화면과 픽셀 단위로 맞물리지는 않음. 오프셋 7(frame reset)은 무시
 - 구형 Broadcom b43(BCM4306/4311/4318): 펌웨어를 넣을 수 없어 미지원 (b43-fwcutter가 인터넷에서 받아야 함)
-- FujiNet의 Disk II(5.25") 에뮬레이션은 SP-over-SLIP 구조상 없음 → 5.25"는 슬롯 6 Disk II 사용
 - 복사 방지 3.5" 원본(.woz 3.5")은 블록 방식이라 미지원
 - 펌웨어 SmartPort 시그니처($Cn07=$00) 때문에 구형(비Enhanced) //e·II+ 자동 부팅 스캔에서는 안 잡힘 (기본 기종 Enhanced //e는 문제없음)
-- QEMU(TCG)에서는 FujiNet CONFIG까지 약 45초. 실기는 훨씬 빠를 것으로 예상
+- (1차) QEMU(TCG)에서는 FujiNet CONFIG까지 약 45초
 
 ## 3. 구조
 
@@ -62,13 +69,11 @@
      → Linux 6.12.47 i386 (quiet, console=tty3)
      → busybox init (/etc/inittab) → /usr/bin/apple2-session (tty1)
          ├ APPLE2 파티션 마운트 (/media/apple2, vfat flush)
-         ├ apple2-net & : 모듈 coldplug, udhcpc, wpa_supplicant, ntpd
-         ├ apple2-fujinet & : /opt/fujinet/fujinet -c APPLE2/fujinet/fnconfig.ini -s APPLE2/fujinet/SD
-         │                    (cwd=/run/fujinet, data/ 를 RAM에 복사)
+         ├ apple2-net & : 모듈 coldplug, udhcpc, wpa_supplicant, ntpd (시계용)
          └ linapple -c APPLE2/linapple.conf -f  (SDL1.2 fbcon, ALSA)
 ```
 
-- FujiNet 연결: LinApple의 FujiNet 카드가 127.0.0.1:1985에서 listen → FujiNet-PC가 접속 → INIT 스캔으로 유닛 수 파악 (마지막 유닛은 END OF CHAIN 응답)
+- (제거됨, 참고용) FujiNet 연결: LinApple의 FujiNet 카드가 127.0.0.1:1985에서 listen → FujiNet-PC가 접속 → INIT 스캔으로 유닛 수 파악 (마지막 유닛은 END OF CHAIN 응답)
 - 프로토콜: SLIP 프레임, 요청 = 11바이트 헤더 [seq, cmd, pcount, devid, 0, 0, p0..p4] + payload, 응답 = [seq, status, data...] (FujiNet 펌웨어 lib/devrelay 기준)
 - 카드 펌웨어(`src/apple2/peripherals/smartport/firmware/smartport.s`, 슬롯별 어셈블): 카드는 메모리를 읽기만 하고, 쓰기는 6502가 IO 레지스터($C0n9)에서 복사 → 뱅크 전환(보조 메모리, 랭귀지 카드)에 안전, CPU 레지스터 접근 불필요
 - SmartPort(로컬) 카드와 FujiNet 카드는 같은 펌웨어·같은 코어(`SmartPortCard.cpp`)를 쓰고, 백엔드만 다름(`LocalDisks` / `FujiNetLink`)
@@ -80,7 +85,6 @@
 | Linux | github.com/gregkh/linux | v6.12.47 |
 | BusyBox | github.com/mirror/busybox | 371fe9f7 (Buildroot 2026.08 설정 + static + ntpd) |
 | LinApple | github.com/linappleii/linapple | 86bee1c2 + `linapple/*.patch` 5개 |
-| FujiNet-PC | github.com/FujiNetWIFI/fujinet-firmware | d85ec00a, `-DFUJINET_TARGET=APPLE` |
 | SDL 1.2 | github.com/libsdl-org/SDL-1.2 | 81490298 (fbcon + ALSA, 32비트) |
 | wpa_supplicant | archive.ubuntu.com pool, wpa_2.11.orig | 2.11 |
 | glibc, OpenSSL, ALSA, libnl, expat | Ubuntu 24.04 i386 패키지 | noble |
@@ -117,8 +121,8 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 - [ ] 무선랜 칩 모델 확인 → 필요한 드라이버·펌웨어 추가
 - [ ] 부팅 시간 측정·단축 (커널 크기, 서비스 순서)
 - [ ] (선택) 화면 하단 드라이브 LED 표시 끄기 옵션 (`Show Leds = 0`)
-- [ ] (선택) FujiNet 기본 호스트 목록을 Apple II용으로 정리
-- [ ] (선택) 부팅 화면에 FujiNet-PC 대기 시간(`Boot Wait`) 조정
+- [ ] (선택) 네트워크를 아예 빼서 부팅 가볍게 (지금은 시계 맞추기용으로만 남음)
+- [ ] (선택) FujiNet을 다시 쓰고 싶으면 2026-11-04 이전 커밋의 build.sh·overlay 참고
 - [ ] SuperSprite: StarSprite 데모·게임 디스크로 실제 동작 확인 (asimov `images/hardware/video/StarSprite-SuperSprite-Programs.zip`)
 - [ ] (선택) SuperSprite Echo II 음성(TMS5220) 구현
 - [ ] (선택) 비슷한 Third Millennium Arcade Board도 추가 (같은 VDP, 레지스터 배치만 다름, 슬롯 4)

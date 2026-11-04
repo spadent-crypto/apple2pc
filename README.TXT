@@ -8,21 +8,19 @@ disks\            디스크 이미지를 넣는 곳
                   3.5"  : .po .2mg (400K/800K)  -> UniDisk 3.5 드라이브
                   하드  : .po .hdv .2mg (32MB까지)
 saves\            세이브 슬롯 0~9 (SaveStateN.aws + 저장 순간 화면 SaveStateN.bmp)
-fujinet\SD\       FujiNet의 SD 카드 (FujiNet 메뉴의 1번 호스트 "SD")
-fujinet\fnconfig.ini  FujiNet 설정 (FujiNet 메뉴에서 바꾼 내용이 저장됨)
-wifi.txt          무선랜 이름과 비밀번호 (유선 랜만 쓰면 비워 두기)
+wifi.txt          무선랜 이름과 비밀번호 (시계 맞추기용, 유선 랜만 쓰면 비워 두기)
 linapple.conf     에뮬레이터 설정 (기종, 속도, 슬롯 구성 등)
 
 슬롯 구성
 ---------
-슬롯 7  FujiNet       전원을 켜면 FujiNet CONFIG 메뉴가 먼저 뜹니다
+슬롯 7  SmartPort     하드디스크 1, 2 + UniDisk 3.5 드라이브 1, 2 (먼저 부팅)
 슬롯 6  Disk II       5.25" 드라이브 1, 2
-슬롯 5  SmartPort     하드디스크 1, 2 + UniDisk 3.5 드라이브 1, 2
 슬롯 4  Mockingboard
-FujiNet 없이 로컬 디스크로 바로 부팅하려면 linapple.conf에서
-"Slot 7 = FujiNet"을 "Slot 7 = None"으로 바꾸세요.
-SuperSprite(Synetix 스프라이트 카드) 소프트웨어를 쓰려면 슬롯 7에
-"Slot 7 = SuperSprite"를 넣으세요. 그동안 FujiNet은 꺼집니다.
+부팅 순서: 하드디스크 1 -> (하드가 비어 있으면) 5.25" 드라이브 1
+5.25" 드라이브 1이 비어 있으면 실기처럼 디스크를 기다리며 멈춥니다.
+하드가 들어 있는데 플로피로 부팅하려면 Ctrl+F10(Reset) 뒤 PR#6 을 치세요.
+SuperSprite(Synetix 스프라이트 카드) 소프트웨어를 쓰려면 linapple.conf에서
+"Slot 7 = SuperSprite", "Slot 5 = SmartPort"로 바꾸세요.
 
 키
 ---
@@ -44,9 +42,3 @@ F9              화면 모드 (컬러/흑백 등)
 ScrollLock      최고 속도 토글
 F12             종료하고 전원 끄기
 Ctrl+Alt+F2     리눅스 셸 (Alt+F1로 복귀)
-
-FujiNet 웹 설정
----------------
-같은 네트워크의 폰/PC 브라우저에서 http://(이 PC의 IP):8000 을 열면
-FujiNet 설정 화면이 나옵니다. 네트워크에 연결되면 이 PC의 IP 주소가
-APPLE2 파티션의 network.txt에 적힙니다.

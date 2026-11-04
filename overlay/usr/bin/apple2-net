@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bring up the network for FujiNet: load drivers for what is plugged in,
+# Bring up the network (for the clock): load drivers for what is plugged in,
 # then DHCP on wired cards and, with APPLE2/wifi.txt filled in, on Wi-Fi.
 # Runs in the background; the Apple does not wait for it.
 
