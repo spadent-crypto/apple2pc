@@ -91,7 +91,7 @@ stage_busybox() {
 	log "busybox (static)"
 	local b=$WORK/src/busybox
 	cp "$KIT/busybox/busybox.config" "$b/.config"
-	yes "" | make -C "$b" CC="gcc -m32" HOSTCC=gcc oldconfig >/dev/null
+	{ yes "" || true; } | make -C "$b" CC="gcc -m32" HOSTCC=gcc oldconfig >/dev/null
 	make -C "$b" CC="gcc -m32" HOSTCC=gcc -j"$JOBS"
 }
 
