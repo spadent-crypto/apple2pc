@@ -31,6 +31,7 @@
 - `overlay/usr/bin/apple2-sound` (LinApple 전에 동기 실행): PCI 오디오 장치(class 04xx) 모듈 로드 → 카드가 없을 때만 `APPLE2\sound.txt` 줄 → ISA PnP 드라이버(옵션 없이) → SB 표준 설정(220h, IRQ 5/7, DMA 1/5, MPU 330h, FM 388h) 순서. 결과를 `APPLE2\sound-cards.txt`(CRLF), 로그는 `/run/sound.log`
 - 알게 된 것: ISA PnP 겸용 드라이버(sb16, sbawe, es18xx, opl3sa2, cs4236 등)는 `isapnp` 기본값이 1이라 레거시 포트를 아예 안 봄 → `port=`가 있으면 그 모듈이 `isapnp` 파라미터를 가질 때 `isapnp=0`을 자동으로 붙임(.ko 안 `parm=isapnp:` 확인). `snd-cs4231`은 `dma2`를 안 주면 자동 선택하다 실패 → 두 번째 DMA가 없으면 `dma2=-1`
 - QEMU 확인: `-device sb16`(비PnP, 220h/5/1/5) 자동 인식, `-device cs4231a,irq=10` + sound.txt 한 줄로 인식, `-device AC97`은 내장 드라이버로 인식. QEMU에서는 IRQ 9가 ACPI라 WSS 예시는 IRQ 10
+- 사용자 확인(2026-11-04, 맥 QEMU): v1.2 정상 부팅, 울티마 IV·V가 소리와 함께 실행됨
 - 아직 실기 ISA 카드로는 확인 못 함
 
 ### 변경 (2026-11-04): FujiNet 제거
