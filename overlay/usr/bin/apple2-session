@@ -76,6 +76,11 @@ for ctl in Master PCM Front Headphone Speaker; do
 done
 
 export HOME="$DATA/.home"
+# The display settings menu (Alt+F9) edits this file and, when the
+# resolution changed and the user wants it, leaves the flag and quits.
+export APPLE2PC_DISPLAY_FILE="$DATA/display.txt"
+export APPLE2PC_REBOOT_FLAG=/run/apple2-reboot
+rm -f "$APPLE2PC_REBOOT_FLAG"
 export SDL_VIDEODRIVER=fbcon
 export SDL_FBDEV=/dev/fb0
 export SDL_NOMOUSE=1
@@ -86,7 +91,7 @@ cd "$DATA" || cd /
 rc=$?
 
 sync
-if [ $rc -ne 0 ]; then
+if [ $rc -ne 0 ] && [ ! -f "$APPLE2PC_REBOOT_FLAG" ]; then
 	# Leave the reason on screen instead of powering off.
 	cp "$LOG" "$DATA/linapple.log" 2>/dev/null
 	printf '\033c'
@@ -106,4 +111,8 @@ fi
 
 sync
 umount "$DATA" 2>/dev/null
-poweroff
+if [ -f "$APPLE2PC_REBOOT_FLAG" ]; then
+	reboot
+else
+	poweroff
+fi

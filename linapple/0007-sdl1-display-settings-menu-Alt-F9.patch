@@ -1,0 +1,706 @@
+From 4e9f33a8b3cd80fabe282e9786e07abb3a31ee43 Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Wed, 4 Nov 2026 15:53:45 +0900
+Subject: [PATCH] sdl1: display settings menu (Alt+F9)
+
+A full-screen menu for the Apple II PC boot image: screen resolution,
+scaling (aspect or sharp) and monitor shape. It edits the display.txt
+named by APPLE2PC_DISPLAY_FILE (keeping its comments and line ends) and
+Scale Mode / Monitor Aspect in linapple.conf, refits the picture at once,
+and when the resolution changed asks whether to restart: yes creates the
+file named by APPLE2PC_REBOOT_FLAG and quits so the session restarts the
+machine. Without APPLE2PC_DISPLAY_FILE it only shows a short message.
+---
+ CMakeLists.txt                     |   1 +
+ src/frontends/sdl1/DisplayMenu.cpp | 499 +++++++++++++++++++++++++++++
+ src/frontends/sdl1/DisplayMenu.h   |  26 ++
+ src/frontends/sdl1/Frame.cpp       |  40 ++-
+ src/frontends/sdl1/Frame.h         |   2 +
+ tests/test_frontend_sdl1.cpp       |  27 ++
+ 6 files changed, 580 insertions(+), 15 deletions(-)
+ create mode 100644 src/frontends/sdl1/DisplayMenu.cpp
+ create mode 100644 src/frontends/sdl1/DisplayMenu.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 12d2e41e..f3359359 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -468,6 +468,7 @@ set(SOURCES_FE_SDL2
+ set(SOURCES_FE_SDL1
+     ${SOURCES_FE_COMMON_SDL}
+     src/frontends/sdl1/DiskChoose.cpp
++    src/frontends/sdl1/DisplayMenu.cpp
+     src/frontends/sdl1/Frame.cpp
+     src/frontends/sdl1/Main.cpp
+     src/frontends/sdl1/SDL_Asset.cpp
+diff --git a/src/frontends/sdl1/DisplayMenu.cpp b/src/frontends/sdl1/DisplayMenu.cpp
+new file mode 100644
+index 00000000..104d8e4a
+--- /dev/null
++++ b/src/frontends/sdl1/DisplayMenu.cpp
+@@ -0,0 +1,499 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Display settings menu: screen resolution (for the next start), scaling
++// and monitor shape.
++
++#include "frontends/sdl1/DisplayMenu.h"
++
++#include <SDL/SDL.h>
++#include <SDL/SDL_events.h>
++#include <SDL/SDL_keysym.h>
++#include <SDL/SDL_video.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <array>
++#include <cctype>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <sstream>
++#include <string>
++#include <vector>
++
++#include "core/LinAppleCore.h"
++#include "core/Registry.h"
++#include "frontends/common/AudioMixer.h"
++#include "frontends/common/VideoStretch.h"
++#include "frontends/sdl1/Frame.h"
++#include "frontends/sdl1/SDL_Video.h"
++#include "frontends/sdl1/SnapshotGallery.h"
++
++namespace {
++
++auto trim_lower(std::string s) -> std::string {
++  s.erase(std::remove_if(s.begin(), s.end(),
++                         [](unsigned char c) {
++                           return c == ' ' || c == '\t' || c == '\r';
++                         }),
++          s.end());
++  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
++    return static_cast<char>(std::tolower(c));
++  });
++  return s;
++}
++
++// Does the line set KEY? Then *value_start is where its value begins.
++auto line_sets(const std::string& line, const char* key, size_t* value_start)
++    -> bool {
++  size_t i = 0;
++  while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
++    ++i;
++  }
++  const size_t n = std::strlen(key);
++  if (line.size() < i + n) {
++    return false;
++  }
++  for (size_t j = 0; j < n; ++j) {
++    if (std::toupper(static_cast<unsigned char>(line[i + j])) !=
++        std::toupper(static_cast<unsigned char>(key[j]))) {
++      return false;
++    }
++  }
++  i += n;
++  while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
++    ++i;
++  }
++  if (i >= line.size() || line[i] != '=') {
++    return false;
++  }
++  *value_start = i + 1;
++  return true;
++}
++
++auto read_file(const char* path, std::string* text) -> bool {
++  std::ifstream in(path, std::ios::binary);
++  if (!in) {
++    return false;
++  }
++  std::ostringstream ss;
++  ss << in.rdbuf();
++  *text = ss.str();
++  return true;
++}
++
++// Written beside it and renamed over it, then flushed to the disk.
++auto write_file(const char* path, const std::string& text) -> bool {
++  const std::string tmp = std::string(path) + ".new";
++  const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
++  if (fd < 0) {
++    return false;
++  }
++  size_t done = 0;
++  while (done < text.size()) {
++    const ssize_t n = write(fd, text.data() + done, text.size() - done);
++    if (n <= 0) {
++      close(fd);
++      unlink(tmp.c_str());
++      return false;
++    }
++    done += static_cast<size_t>(n);
++  }
++  fsync(fd);
++  close(fd);
++  if (rename(tmp.c_str(), path) != 0) {
++    unlink(tmp.c_str());
++    return false;
++  }
++  sync();
++  return true;
++}
++
++auto config_value(const char* key) -> std::string {
++  std::string value;
++  if (!config_load_string("Configuration", key, &value)) {
++    return {};
++  }
++  return trim_lower(value);
++}
++
++struct Choice {
++  const char* label;
++  std::vector<std::string> values;
++  size_t index;
++};
++
++auto index_of(const std::vector<std::string>& values, const std::string& v)
++    -> size_t {
++  for (size_t i = 0; i < values.size(); ++i) {
++    if (values[i] == v) {
++      return i;
++    }
++  }
++  return values.size();
++}
++
++auto hint_for(int row, const std::string& value) -> const char* {
++  switch (row) {
++    case 0:
++      return value == "auto"
++                 ? "The monitor's own size. Used from the next start."
++                 : "Set the LCD panel's own size. Used from the next start.";
++    case 1:
++      return value == "sharp"
++                 ? "Sharp: every line the same height, 4:3 kept."
++                 : "Aspect: 4:3, as big as the screen allows.";
++    default:
++      return value == "auto"
++                 ? "Auto: screen pixels taken as square."
++                 : "Set if the monitor stretches the picture.";
++  }
++}
++
++auto shown_value(int row, const std::string& value) -> std::string {
++  if (row == 1) {
++    return value == "sharp" ? "SHARP" : "ASPECT";
++  }
++  return value;
++}
++
++struct MenuLayout {
++  int w = 0;
++  int h = 0;
++  double k = 1.0;
++  int line = 8;
++  int margin = 8;
++};
++
++auto menu_layout(int w, int h) -> MenuLayout {
++  MenuLayout l;
++  l.w = w;
++  l.h = h;
++  // 46 characters across and about 20 lines down fit at this size.
++  l.k = std::max(1.0, std::min(static_cast<double>(w) / (46.0 * font_size_x),
++                               static_cast<double>(h) / (20.0 * font_size_y)));
++  l.line = static_cast<int>(font_size_y * l.k);
++  l.margin = std::max(6, l.line);
++  return l;
++}
++
++auto box(SDL_Surface* s, int x, int y, int w, int h, Uint32 color, int width)
++    -> void {
++  ScopedSurfaceLock lock(s);
++  for (int i = 0; i < width; ++i) {
++    rectangle(lock.view(), x - i, y - i, w + (2 * i), h + (2 * i), color);
++  }
++}
++
++auto draw_menu(SDL_Surface* s, const MenuLayout& l,
++               const std::array<Choice, 3>& rows, int selected,
++               const char* now) -> void {
++  const Uint32 black = SDL_MapRGB(s->format, 0, 0, 0);
++  const Uint32 panel = SDL_MapRGB(s->format, 24, 24, 32);
++  const Uint32 grey = SDL_MapRGB(s->format, 90, 90, 100);
++  const Uint32 hilite = SDL_MapRGB(s->format, 255, 220, 0);
++  SDL_FillRect(s, nullptr, black);
++
++  const int row_h = l.line * 3;
++  const int top = l.margin * 2 + (l.line * 4);
++  const int left = l.w / 10;
++  const int width = l.w - (2 * left);
++
++  {
++    ScopedSurfaceLock lock(s);
++    font_print_centered(l.w / 2, l.margin * 2, "DISPLAY SETTINGS", lock.view(),
++                        l.k, l.k);
++    font_print_centered(l.w / 2, l.margin * 2 + (l.line * 2), now,
++                        lock.view(), l.k * 0.75, l.k * 0.75);
++  }
++
++  for (int r = 0; r < 3; ++r) {
++    const Choice& c = rows.at(static_cast<size_t>(r));
++    const int y = top + (r * (row_h + l.line));
++    SDL_Rect rect{static_cast<Sint16>(left), static_cast<Sint16>(y),
++                  static_cast<Uint16>(width), static_cast<Uint16>(row_h)};
++    SDL_FillRect(s, &rect, panel);
++    box(s, left, y, width, row_h, r == selected ? hilite : grey,
++        r == selected ? 3 : 1);
++    const std::string value = "<  " + shown_value(r, c.values[c.index]) + "  >";
++    ScopedSurfaceLock lock(s);
++    font_print(left + l.line, y + l.line, c.label, lock.view(), l.k, l.k);
++    font_print_right(left + width - l.line, y + l.line, value.c_str(),
++                     lock.view(), l.k, l.k);
++  }
++
++  const auto& sel = rows.at(static_cast<size_t>(selected));
++  const int hint_y = top + (3 * (row_h + l.line)) + l.line;
++  ScopedSurfaceLock lock(s);
++  font_print_centered(l.w / 2, hint_y, hint_for(selected, sel.values[sel.index]),
++                      lock.view(), l.k * 0.75, l.k * 0.75);
++  font_print_centered(l.w / 2, l.h - (l.line * 2),
++                      "Up/Down: item  Left/Right: change  Enter: save  Esc: cancel",
++                      lock.view(),
++                      std::min(l.k, static_cast<double>(l.w) /
++                                        (62.0 * font_size_x)),
++                      l.k * 0.75);
++}
++
++auto draw_question(SDL_Surface* s, const MenuLayout& l, const char* line1,
++                   const char* line2) -> void {
++  SDL_FillRect(s, nullptr, SDL_MapRGB(s->format, 0, 0, 0));
++  ScopedSurfaceLock lock(s);
++  font_print_centered(l.w / 2, (l.h / 2) - (l.line * 2), line1, lock.view(),
++                      l.k, l.k);
++  font_print_centered(l.w / 2, (l.h / 2) + l.line, line2, lock.view(), l.k,
++                      l.k);
++}
++
++// Waits for a key; true for Y or Enter, false for N or Esc.
++auto ask_yes_no() -> bool {
++  for (;;) {
++    SDL_Event e{};
++    if (SDL_WaitEvent(&e) == 0) {
++      return false;
++    }
++    if (e.type == SDL_QUIT) {
++      SDL_PushEvent(&e);
++      return false;
++    }
++    if (e.type != SDL_KEYDOWN) {
++      continue;
++    }
++    switch (e.key.keysym.sym) {
++      case SDLK_y:
++      case SDLK_RETURN:
++      case SDLK_KP_ENTER:
++        return true;
++      case SDLK_n:
++      case SDLK_ESCAPE:
++        return false;
++      default:
++        break;
++    }
++  }
++}
++
++auto request_quit() -> void {
++  system_state.mode = app_mode_exit;
++  SDL_Event qe{};
++  qe.type = SDL_QUIT;
++  SDL_PushEvent(&qe);
++}
++
++}  // namespace
++
++auto display_file_get(const std::string& text, const char* key)
++    -> std::string {
++  std::istringstream in(text);
++  std::string line;
++  while (std::getline(in, line)) {
++    size_t start = 0;
++    if (line_sets(line, key, &start)) {
++      const size_t hash = line.find('#', start);
++      return trim_lower(line.substr(start, hash == std::string::npos
++                                               ? std::string::npos
++                                               : hash - start));
++    }
++  }
++  return {};
++}
++
++auto display_file_set(const std::string& text, const char* key,
++                      const std::string& value) -> std::string {
++  std::string out;
++  bool done = false;
++  size_t pos = 0;
++  while (pos < text.size()) {
++    size_t end = text.find('\n', pos);
++    const bool has_nl = end != std::string::npos;
++    if (!has_nl) {
++      end = text.size();
++    }
++    std::string line = text.substr(pos, end - pos);
++    size_t start = 0;
++    if (!done && line_sets(line, key, &start)) {
++      const bool cr = !line.empty() && line.back() == '\r';
++      line = line.substr(0, start) + value + (cr ? "\r" : "");
++      done = true;
++    }
++    out += line;
++    if (has_nl) {
++      out += '\n';
++    }
++    pos = end + (has_nl ? 1 : 0);
++  }
++  if (!done) {
++    const bool crlf = text.find("\r\n") != std::string::npos;
++    if (!out.empty() && out.back() != '\n') {
++      out += crlf ? "\r\n" : "\n";
++    }
++    out += std::string(key) + "=" + value + (crlf ? "\r\n" : "\n");
++  }
++  return out;
++}
++
++auto display_menu_open() -> void {
++  const char* path = std::getenv("APPLE2PC_DISPLAY_FILE");
++  if (path == nullptr || *path == '\0') {
++    osd_toast("Display settings: no display.txt on this system");
++    return;
++  }
++  if (screen == nullptr) {
++    return;
++  }
++  if (font_sfc == nullptr && !fonts_initialization()) {
++    return;
++  }
++
++  std::string text;
++  read_file(path, &text);
++
++  std::array<Choice, 3> rows{
++      Choice{"Resolution",
++             {"auto", "640x480", "800x600", "1024x768", "1152x864", "1280x800",
++              "1280x960", "1280x1024", "1366x768", "1400x1050", "1440x900",
++              "1600x1200", "1680x1050", "1920x1080"},
++             0},
++      Choice{"Scaling", {"aspect", "sharp"}, 0},
++      Choice{"Monitor shape", {"auto", "16:9", "16:10", "5:4", "3:2", "4:3"},
++             0}};
++
++  std::string res = display_file_get(text, "RESOLUTION");
++  if (res.empty()) {
++    res = "1024x768";
++  }
++  if (index_of(rows[0].values, res) == rows[0].values.size()) {
++    rows[0].values.push_back(res);
++  }
++  rows[0].index = index_of(rows[0].values, res);
++  rows[1].index = display_file_get(text, "PRIORITY") == "sharp" ? 1 : 0;
++  const size_t mon = index_of(rows[2].values, config_value("Monitor Aspect"));
++  rows[2].index = mon < rows[2].values.size() ? mon : 0;
++
++  const std::string old_res = res;
++  std::array<char, 64> now{};
++  std::snprintf(now.data(), now.size(), "Screen now: %ux%u",
++                system_state.screen_width, system_state.screen_height);
++
++  audio_mixer_set_fade(fade_out);
++  const AppMode previous_mode = system_state.mode;
++  if (previous_mode == app_mode_running) {
++    system_state.mode = app_mode_paused;
++  }
++
++  const MenuLayout layout = menu_layout(screen->w, screen->h);
++  int selected = 0;
++  bool save = false;
++  bool done = false;
++  draw_menu(screen, layout, rows, selected, now.data());
++  SDL_Flip(screen);
++
++  while (!done) {
++    SDL_Event event{};
++    if (SDL_WaitEvent(&event) == 0) {
++      break;
++    }
++    if (event.type == SDL_QUIT) {
++      SDL_PushEvent(&event);
++      system_state.mode = app_mode_exit;
++      break;
++    }
++    if (event.type != SDL_KEYDOWN) {
++      continue;
++    }
++    Choice& c = rows.at(static_cast<size_t>(selected));
++    switch (event.key.keysym.sym) {
++      case SDLK_UP:
++        selected = (selected + 2) % 3;
++        break;
++      case SDLK_DOWN:
++      case SDLK_TAB:
++        selected = (selected + 1) % 3;
++        break;
++      case SDLK_LEFT:
++        c.index = (c.index + c.values.size() - 1) % c.values.size();
++        break;
++      case SDLK_RIGHT:
++      case SDLK_SPACE:
++        c.index = (c.index + 1) % c.values.size();
++        break;
++      case SDLK_RETURN:
++      case SDLK_KP_ENTER:
++        save = true;
++        done = true;
++        break;
++      case SDLK_ESCAPE:
++      case SDLK_F9:
++        done = true;
++        break;
++      case SDLK_F12:
++        request_quit();
++        done = true;
++        break;
++      default:
++        break;
++    }
++    if (!done) {
++      draw_menu(screen, layout, rows, selected, now.data());
++      SDL_Flip(screen);
++    }
++  }
++
++  bool restart = false;
++  if (save && system_state.mode != app_mode_exit) {
++    const std::string new_res = rows[0].values[rows[0].index];
++    const std::string new_pri = rows[1].values[rows[1].index];
++    const std::string new_mon = rows[2].values[rows[2].index];
++    text = display_file_set(text, "RESOLUTION", new_res);
++    text = display_file_set(text, "PRIORITY", new_pri);
++    const bool written = write_file(path, text);
++    config_save_string("Configuration", "Scale Mode", new_pri.c_str());
++    config_save_string("Configuration", "Monitor Aspect", new_mon.c_str());
++    Configuration::instance().save();
++
++    if (!written) {
++      osd_toast("Could not write display.txt");
++    } else if (new_res != old_res) {
++      const std::string q = "Restart now to use " + new_res + "?";
++      draw_question(screen, layout, q.c_str(), "Y: restart now    N: later");
++      SDL_Flip(screen);
++      restart = ask_yes_no();
++      if (!restart) {
++        osd_toast("Saved. The new resolution is used from the next start.");
++      }
++    } else {
++      osd_toast("Display settings saved");
++    }
++  }
++
++  // Drop the key-up of whatever closed the menu.
++  SDL_Event drain{};
++  while (SDL_PollEvent(&drain) != 0) {
++    if (drain.type == SDL_QUIT) {
++      SDL_PushEvent(&drain);
++      system_state.mode = app_mode_exit;
++      break;
++    }
++  }
++
++  if (restart) {
++    const char* flag = std::getenv("APPLE2PC_REBOOT_FLAG");
++    if (flag != nullptr && *flag != '\0') {
++      if (FILE* f = std::fopen(flag, "w")) {
++        std::fclose(f);
++      }
++    }
++    request_quit();
++  }
++
++  if (system_state.mode == app_mode_paused &&
++      previous_mode == app_mode_running) {
++    system_state.mode = app_mode_running;
++  }
++  frame_refit_picture();
++  system_state.reset_timing = true;
++  if (system_state.mode == app_mode_running) {
++    audio_mixer_set_fade(fade_in);
++  }
++}
+diff --git a/src/frontends/sdl1/DisplayMenu.h b/src/frontends/sdl1/DisplayMenu.h
+new file mode 100644
+index 00000000..c63ad642
+--- /dev/null
++++ b/src/frontends/sdl1/DisplayMenu.h
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#pragma once
++
++#include <string>
++
++// Display settings menu (Alt+F9) for the Apple II PC boot image.
++//
++// The screen resolution lives in a display.txt that the boot loader reads
++// (RESOLUTION=WxH or auto) and the scaling there too (PRIORITY=aspect or
++// sharp). The menu edits that file, whose path comes from the environment
++// variable APPLE2PC_DISPLAY_FILE, together with "Scale Mode" and "Monitor
++// Aspect" in linapple.conf. A new resolution needs a restart: answering
++// yes creates the file named by APPLE2PC_REBOOT_FLAG and quits, and the
++// session script restarts the machine.
++
++// Full-screen menu. Blocks until the user saves or cancels.
++auto display_menu_open() -> void;
++
++// The value of KEY=value in display.txt text (spaces and a CR at the end
++// dropped, lower case), or "" when it is not there.
++auto display_file_get(const std::string& text, const char* key) -> std::string;
++
++// The text with KEY=value set: the existing line is replaced (keeping a CR
++// at its end), or a line is added in the file's own line-end style.
++auto display_file_set(const std::string& text, const char* key,
++                      const std::string& value) -> std::string;
+diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
+index 7ae86b6e..d6322539 100644
+--- a/src/frontends/sdl1/Frame.cpp
++++ b/src/frontends/sdl1/Frame.cpp
+@@ -47,6 +47,7 @@
+ #include "frontends/sdl1/DiskChoose.h"
+ #include "frontends/sdl1/SDL_Asset.h"
+ #include "frontends/sdl1/SDL_Video.h"
++#include "frontends/sdl1/DisplayMenu.h"
+ #include "frontends/sdl1/SnapshotGallery.h"
+ #include "frontends/sdl1/SdlPtr.h"
+ 
+@@ -202,6 +203,10 @@ auto handle_btn_setup(int mod) -> void {
+ }
+ 
+ auto handle_btn_cycle(int mod) -> void {
++  if ((mod & KMOD_ALT) != 0) {
++    display_menu_open();
++    return;
++  }
+   if ((mod & KMOD_SHIFT) != 0) {
+     set_budget_video(!get_budget_video());
+     return;
+@@ -358,7 +363,27 @@ auto cycle_monitor_aspect() -> void {
+   }
+   config_save_string("Configuration", "Monitor Aspect", shapes[next]);
+   Configuration::instance().save();
++  frame_refit_picture();
++  std::string msg = std::string("Monitor shape: ") + shapes[next];
++  if (next == 0) {
++    msg += " (screen pixels square)";
++  }
++  osd_toast(msg.c_str());
++}
++
++// A load can take the mouse card away; a captured pointer would feed nothing.
++auto load_save_state() -> void {
++  save_state_load();
++  if (!mouse_input_consumer_present()) {
++    mouse_input_release();
++  }
++}
+ 
++}  // namespace
++
++// Fit the picture again after a full-screen setting changed, over a black
++// screen.
++auto frame_refit_picture() -> void {
+   {
+     const std::lock_guard<std::recursive_mutex> lock(video_draw_mutex);
+     if (is_fullscreen && window_resized) {
+@@ -373,24 +398,9 @@ auto cycle_monitor_aspect() -> void {
+       SDL_FillRect(screen, nullptr, 0);
+     }
+   }
+-  std::string msg = std::string("Monitor shape: ") + shapes[next];
+-  if (next == 0) {
+-    msg += " (screen pixels square)";
+-  }
+-  osd_toast(msg.c_str());
+   draw_apple_content();
+ }
+ 
+-// A load can take the mouse card away; a captured pointer would feed nothing.
+-auto load_save_state() -> void {
+-  save_state_load();
+-  if (!mouse_input_consumer_present()) {
+-    mouse_input_release();
+-  }
+-}
+-
+-}  // namespace
+-
+ auto draw_apple_content() -> void {
+   const std::lock_guard<std::recursive_mutex> lock(video_draw_mutex);
+   video_realize_palette();
+diff --git a/src/frontends/sdl1/Frame.h b/src/frontends/sdl1/Frame.h
+index 2004e6fe..4f6c6dc7 100644
+--- a/src/frontends/sdl1/Frame.h
++++ b/src/frontends/sdl1/Frame.h
+@@ -50,6 +50,8 @@ auto frame_poll_activity() -> void;
+ auto frame_status_led(int index) -> char;
+ 
+ auto draw_apple_content() -> void;
++// Fit the picture again after a full-screen setting changed.
++auto frame_refit_picture() -> void;
+ auto draw_frame_window() -> void;
+ auto draw_status_area(int drawflags) -> void;
+ auto process_button_click(int button, int mod) -> void;
+diff --git a/tests/test_frontend_sdl1.cpp b/tests/test_frontend_sdl1.cpp
+index 621b345e..8a6c8e29 100644
+--- a/tests/test_frontend_sdl1.cpp
++++ b/tests/test_frontend_sdl1.cpp
+@@ -9,6 +9,7 @@
+ #include <string>
+ 
+ #include "SDL_active.h"
++#include "frontends/sdl1/DisplayMenu.h"
+ #include "SDL_events.h"
+ #include "SDL_keyboard.h"
+ #include "SDL_keysym.h"
+@@ -1493,3 +1494,29 @@ TEST_CASE(
+ }
+ 
+ #endif
++
++TEST_CASE("Display menu edits display.txt and keeps its comments and line ends") {
++  const std::string crlf =
++      "# comment RESOLUTION=640x480\r\n"
++      "RESOLUTION=1024x768\r\n"
++      "#\r\n"
++      "PRIORITY = Aspect  # note\r\n";
++  CHECK(display_file_get(crlf, "RESOLUTION") == "1024x768");
++  CHECK(display_file_get(crlf, "PRIORITY") == "aspect");
++  CHECK(display_file_get(crlf, "MISSING").empty());
++
++  std::string t = display_file_set(crlf, "RESOLUTION", "800x600");
++  t = display_file_set(t, "PRIORITY", "sharp");
++  CHECK(t ==
++        "# comment RESOLUTION=640x480\r\n"
++        "RESOLUTION=800x600\r\n"
++        "#\r\n"
++        "PRIORITY =sharp\r\n");
++  CHECK(display_file_get(t, "RESOLUTION") == "800x600");
++
++  // A key the file lacks is added in its own line-end style.
++  CHECK(display_file_set("A=1\n", "PRIORITY", "sharp") == "A=1\nPRIORITY=sharp\n");
++  CHECK(display_file_set("A=1\r\n", "PRIORITY", "sharp") ==
++        "A=1\r\nPRIORITY=sharp\r\n");
++  CHECK(display_file_set("", "RESOLUTION", "auto") == "RESOLUTION=auto\n");
++}
+-- 
+2.43.0
+

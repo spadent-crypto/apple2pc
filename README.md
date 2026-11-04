@@ -62,6 +62,7 @@ README.TXT        키 안내
 | F5 | 5.25" 드라이브 맞바꾸기 |
 | Ctrl+F2 / Ctrl+F10 | 재부팅 / Ctrl+Reset |
 | F7 / F8 / F9 | 디버거 / 스크린샷 / 화면 모드 |
+| Alt+F9 | 화면 설정 메뉴 (해상도, 확대 방식, 모니터 모양; 해상도를 바꾸면 재부팅 여부를 물음) |
 | Alt+F6 | 모니터 모양 바꾸기 (auto/16:9/16:10/5:4/3:2/4:3, 저장됨) |
 | ScrollLock | 최고 속도 |
 | F12 | 종료, 전원 꺼짐 |
@@ -85,7 +86,7 @@ README.TXT        키 안내
 
 ## 화면
 
-`APPLE2\display.txt`를 고치고 재부팅하면 적용됩니다.
+실행 중 **Alt+F9**로 화면 설정 메뉴를 열어 해상도, 확대 방식(ASPECT/SHARP), 모니터 모양을 고를 수 있습니다. 위/아래로 항목, 왼쪽/오른쪽으로 값을 바꾸고 Enter로 저장합니다. 확대 방식과 모니터 모양은 바로 적용되고, 해상도를 바꾸면 지금 재부팅할지 묻습니다(Y면 재부팅). 메뉴는 `APPLE2\display.txt`와 `linapple.conf`에 저장하므로, 이 파일들을 직접 고치고 재부팅해도 됩니다.
 
 | 항목 | 값 | 뜻 |
 |---|---|---|
@@ -145,7 +146,7 @@ Ubuntu 24.04 x86_64에서 root로 `./build.sh`를 실행하면 `out/apple2pc.img
 ```
 kernel/linux-fragment.config   커널 설정 (i386_defconfig 위에 덮어씀)
 busybox/busybox.config         busybox 설정 (정적 빌드)
-linapple/*.patch               LinApple 패치 6개
+linapple/*.patch               LinApple 패치 7개
 wpa/wpa_supplicant.config      wpa_supplicant 빌드 설정
 overlay/                       inittab, 부팅·네트워크 스크립트, 기본 설정
 grub.cfg, genimage.cfg         부트로더, 디스크 구성
@@ -159,5 +160,6 @@ LinApple 패치:
 4. 넣은 디스크를 다음 부팅 때 그대로 넣기
 5. SuperSprite 카드
 6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 모니터 모양 보정(`Monitor Aspect`, Alt+F6), 확대 방식(`Scale Mode` aspect/sharp), 전체화면으로 시작할 때도 적용
+7. 화면 설정 메뉴(Alt+F9): display.txt와 설정을 고치고 필요하면 재부팅 요청
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

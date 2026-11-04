@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.6 2026-11-04). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.7 2026-11-04). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-04 (v1.6: display.txt로 해상도·확대 방식 선택)
+마지막 갱신: 2026-11-04 (v1.7: 화면 설정 메뉴 Alt+F9)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,13 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-04, v1.7): 화면 설정 메뉴 (Alt+F9)
+- 사용자 요청: 단축키로 메뉴를 불러 해상도와 비율/선명을 고르고 저장한 뒤 재부팅할지 선택
+- LinApple 패치 7: `src/frontends/sdl1/DisplayMenu.{h,cpp}` (SnapshotGallery와 같은 블로킹 전체화면 방식, 내장 폰트라 영어). 항목: Resolution(목록 + 파일에 있던 값), Scaling(ASPECT/SHARP), Monitor shape. Enter 저장 → `APPLE2PC_DISPLAY_FILE`(display.txt)의 RESOLUTION/PRIORITY 줄만 바꿔 씀(주석·CRLF 유지, .new에 쓰고 rename + fsync), linapple.conf의 Scale Mode/Monitor Aspect 저장, 그림 다시 맞춤(`frame_refit_picture`, Alt+F6도 이걸 씀). 해상도가 바뀌었으면 "Restart now?" Y → `APPLE2PC_REBOOT_FLAG` 파일을 만들고 종료
+- apple2-session: 두 환경 변수를 넘기고, LinApple이 끝났을 때 플래그가 있으면 poweroff 대신 reboot (오류 종료여도)
+- 테스트: display_file_get/set 단위 테스트(주석의 같은 글자는 안 건드림, CRLF 유지, 없는 키는 그 파일 줄끝 방식으로 추가). 33개 중 32개 통과(기존 실패 1개 그대로)
+- QEMU 확인: Alt+F9 → 800x600 / SHARP → Enter → "Restart now to use 800x600?" → Y → 재부팅 후 800x600 화면에 512x384@(144,108). display.txt는 두 값만 바뀌고 CRLF·주석 17줄 유지
 
 ### 추가 (2026-11-04, v1.6): display.txt로 해상도·확대 방식 선택
 - 사용자 요청: 설정에서 LCD 패널 해상도와 "선명함 우선/비율 우선"을 고르고 재부팅하면 적용
