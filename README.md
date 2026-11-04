@@ -9,7 +9,7 @@
 | 세이브 | Ctrl+Shift+0~9 저장(화면 캡처 함께), Ctrl+0~9 불러오기, F11/F10 썸네일 화면 |
 | SmartPort | 슬롯 7. 하드디스크 2개 + UniDisk 3.5 드라이브 2개. 먼저 부팅하고, 비어 있으면 5.25"로 넘어감 |
 | 5.25" | 슬롯 6. Disk II 드라이브 2개 (.dsk .do .po .nib .woz) |
-| 소리 | Mockingboard(슬롯 4) + 스피커, AC'97/HD Audio 등 |
+| 소리 | Mockingboard(슬롯 4) + 스피커. 내장 AC'97/HD Audio, 그 시절 PCI 사운드 카드, ISA 사운드 카드(PnP 또는 `sound.txt`로 포트·IRQ 지정) |
 | SuperSprite | 슬롯 7에 넣고 SmartPort는 슬롯 5로 옮겨 사용. TMS9918A 스프라이트 화면을 애플 화면 위에 합성, AY-3-8912 소리 (Echo II 음성은 미지원) |
 | 네트워크 | 시계 맞추기용. 유선 랜 자동(DHCP), 내장 PCI/USB 무선랜은 `wifi.txt`에 이름·비밀번호 |
 
@@ -39,6 +39,8 @@
 disks\            디스크 이미지
 saves\            세이브 슬롯 (SaveStateN.aws + SaveStateN.bmp)
 wifi.txt          무선랜 SSID / PASSWORD
+sound.txt         ISA 사운드 카드 설정
+sound-cards.txt   잡힌 사운드 카드 (부팅마다 새로 적힘)
 linapple.conf     에뮬레이터 설정
 network.txt       연결되면 IP가 적힘
 README.TXT        키 안내
@@ -75,6 +77,17 @@ README.TXT        키 안내
 - 이미지: ProDOS 순서 블록 이미지(.po .hdv), ProDOS 순서 .2mg, MacBinary로 감싼 이미지, 이것들을 담은 .zip/.gz(읽기 전용).
 - 3.5" 디스크는 블록 단위로 다룹니다. 복사 방지가 걸린 3.5" 원본(.woz 3.5")은 안 됩니다.
 - 3.5" 드라이브의 이미지는 `linapple.conf`의 `SmartPort 3.5 Image 1/2`에, 하드디스크는 `Harddisk Image 1/2`에 기억됩니다.
+
+## 사운드 카드
+
+부팅할 때 `apple2-sound`가 아래 순서로 사운드 카드를 찾습니다. 결과는 `APPLE2\sound-cards.txt`에 적힙니다.
+
+1. **메인보드 내장과 흔한 PCI 카드(커널에 들어 있음):** 인텔·SiS·nVidia·AMD AC'97(`intel8x0`), VIA AC'97, ATI IXP, HD Audio, Sound Blaster Live!/Audigy, Ensoniq AudioPCI·SB PCI 64/128, C-Media CMI8338/8738, Fortemedia FM801, Cirrus CS46xx
+2. **그 밖의 PCI 카드(모듈, 꽂혀 있으면 불러옴):** Aureal Vortex 1/2(AU8810/8820/8830), ESS Maestro 1/2/2E/3·Allegro·Solo-1(ES1938), Yamaha YMF7xx(DS-XG), Trident 4DWave·SiS 7018, ALi M5451, Avance ALS300/ALS4000, Aztech AZF3328, Creative CA0106·SB Live! 5.1 Dell(EMU10K1X)·X-Fi, Cirrus CS4281, VIA Envy24(ICE1712/1724), NeoMagic NM256, C-Media CMI8788(Oxygen/Asus Xonar), S3 SonicVibes, Conexant Riptide, Korg 1212, Echo Audio 일부
+3. **ISA 카드(내장·PCI 카드가 없을 때만):** `APPLE2\sound.txt`에 적은 줄 → ISA PnP 카드 → 사운드 블래스터 표준 설정(220h, IRQ 5/7, DMA 1/5, MPU 330h, FM 388h) 순서
+   - 드라이버: Sound Blaster 1.x/2.0/Pro/16/AWE32/AWE64, ESS ES688/1688/18xx, Crystal CS4231/4232/4236, AD1848/AD1816A, Yamaha OPL3-SA2/SA3, OPTi 82C92x/93x, C-Media CMI8328/8330, Avance ALS100, Aztech AZT1605/2316/2320, Gravis UltraSound Classic/Extreme/MAX/InterWave, Ensoniq SoundScape, Media Vision Jazz16, miro PCM, Gallant SC-6000, Aztech Galaxy, AdLib
+   - 점퍼로 설정하는 카드는 `sound.txt`의 예에서 맞는 줄의 `#`을 지우고 숫자를 카드 설정(DOS의 `SET BLASTER` 값)에 맞춥니다.
+   - 빠진 것: Turtle Beach Maui/Tropez(WaveFront)와 Pinnacle/Fiji(MultiSound)는 펌웨어를 넣을 수 없어 뺐습니다. Sound Blaster 16의 ASP(CSP) 칩도 쓰지 않습니다.
 
 ## 네트워크
 

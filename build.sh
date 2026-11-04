@@ -147,7 +147,7 @@ stage_wpa() {
 DEBS="libc6 libgcc-s1 libstdc++6 libasound2t64 libasound2-data libssl3t64
 libexpat1 libnl-3-200 libnl-genl-3-200 alsa-utils"
 
-# Firmware for the Wi-Fi and Ethernet drivers (from Ubuntu's linux-firmware).
+# Firmware for the Wi-Fi, Ethernet and sound card drivers (from Ubuntu's linux-firmware).
 FW_DEBS="linux-firmware-misc linux-firmware-realtek linux-firmware-intel-wireless
 linux-firmware-broadcom-wireless linux-firmware-mediatek
 linux-firmware-qualcomm-wireless wireless-regdb"
@@ -159,7 +159,8 @@ iwlwifi-6000-4.ucode iwlwifi-6000g2a-6.ucode iwlwifi-6000g2b-6.ucode
 iwlwifi-6050-5.ucode iwlwifi-1000-5.ucode iwlwifi-100-5.ucode iwlwifi-105-6.ucode
 iwlwifi-135-6.ucode iwlwifi-2000-6.ucode iwlwifi-2030-6.ucode
 ath9k_htc htc_7010.fw htc_9271.fw carl9170-1.fw ar5523.bin mt7601u.bin zd1211
-brcm/bcm43xx-0.fw brcm/bcm43xx_hdr-0.fw regulatory.db regulatory.db.p7s"
+brcm/bcm43xx-0.fw brcm/bcm43xx_hdr-0.fw regulatory.db regulatory.db.p7s
+ess yamaha korg ea"
 
 stage_rootfs() {
 	log "root filesystem"
@@ -261,7 +262,8 @@ stage_image() {
 	cp "$KIT/README.TXT" "$data/README.TXT"
 	cp "$KIT/saves-readme.txt" "$data/saves/README.TXT"
 	cp "$KIT/wifi.txt" "$data/wifi.txt"
-	for f in "$data/linapple.conf" "$data/README.TXT" "$data/saves/README.TXT" "$data/wifi.txt"; do
+	cp "$KIT/sound.txt" "$data/sound.txt"
+	for f in "$data/linapple.conf" "$data/README.TXT" "$data/saves/README.TXT" "$data/wifi.txt" "$data/sound.txt"; do
 		sed -i 's/\r*$/\r/' "$f"
 	done
 

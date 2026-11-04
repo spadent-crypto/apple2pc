@@ -1,0 +1,121 @@
+#!/bin/sh
+# Find the sound card before LinApple starts.
+#
+# 1. The onboard chips (AC'97, HD Audio) and the common PCI cards are built
+#    into the kernel. Drivers for the other PCI audio devices present are
+#    loaded here.
+# 2. With still no card, ISA cards are tried: first the lines of
+#    APPLE2/sound.txt (module and port/IRQ/DMA settings, e.g.
+#    "snd-sb16 port=0x220 irq=5 dma8=1 dma16=5"), then ISA PnP cards, then
+#    the usual Sound Blaster settings (220h, IRQ 5/7, DMA 1/5, MPU 330h,
+#    FM 388h). A line "none" in sound.txt skips the ISA search.
+# What was found goes to APPLE2/sound-cards.txt.
+
+DATA=/media/apple2
+CONF=$DATA/sound.txt
+LOG=/run/sound.log
+exec 2>>"$LOG"
+
+has_card() { grep -q '^ *[0-9]' /proc/asound/cards 2>/dev/null; }
+
+MODDIR=/lib/modules/$(uname -r)
+
+# Does a module take a given parameter? (Looks in the .ko itself.)
+has_param() {
+	f=$(sed -n "s#^\([^:]*/$1\.ko\):.*#\1#p" "$MODDIR/modules.dep" | head -n 1)
+	[ -n "$f" ] && grep -qa "parm=$2:" "$MODDIR/$f"
+}
+
+# Try one "module options..." line; leave the module loaded only if it
+# brought a card. With a port given, the ISA PnP drivers need isapnp=0 to
+# look at that port instead of only for PnP cards.
+try() {
+	mod=$(echo "$1" | tr _ -)
+	shift
+	case " $* " in
+	*" port="*)
+		case " $* " in
+		*" isapnp="*) ;;
+		*) has_param "$mod" isapnp && set -- "$@" isapnp=0 ;;
+		esac ;;
+	esac
+	echo "try: $mod $*" >>"$LOG"
+	if modprobe "$mod" "$@" 2>>"$LOG" && has_card; then
+		found="$mod $*"
+		return 0
+	fi
+	modprobe -r "$mod" 2>/dev/null
+	return 1
+}
+
+found=""
+
+# 1. PCI audio devices (class 04xx: multimedia audio, HD Audio).
+for d in /sys/bus/pci/devices/*; do
+	[ -r "$d/class" ] || continue
+	case $(cat "$d/class") in
+	0x04*) modprobe -q "$(cat "$d/modalias")" 2>/dev/null ;;
+	esac
+done
+
+skip_isa=""
+if has_card; then
+	found="PCI / onboard"
+else
+	# 2a. The user's own settings.
+	if [ -f "$CONF" ]; then
+		tr -d '\r' <"$CONF" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
+			grep -v '^$' >/run/sound.lines
+		while read -r line; do
+			case $line in
+			none | NONE) skip_isa=1; break ;;
+			esac
+			# shellcheck disable=SC2086
+			try $line && break
+		done </run/sound.lines
+	fi
+
+	# 2b. ISA PnP cards (drivers without options), then the usual Sound
+	# Blaster settings: 220h, IRQ 5 or 7, DMA 1 and 5, MPU 330h, FM 388h.
+	if [ -z "$found" ] && [ -z "$skip_isa" ]; then
+		while read -r line; do
+			# shellcheck disable=SC2086
+			try $line && break
+		done <<EOF
+snd-sbawe
+snd-sb16
+snd-es18xx
+snd-opl3sa2
+snd-cs4236
+snd-cmi8330
+snd-als100
+snd-azt2320
+snd-ad1816a
+snd-interwave
+snd-sbawe port=0x220 irq=5 dma8=1 dma16=5 mpu_port=0x330 fm_port=0x388
+snd-sb16 port=0x220 irq=5 dma8=1 dma16=5 mpu_port=0x330 fm_port=0x388
+snd-sb16 port=0x220 irq=7 dma8=1 dma16=5 mpu_port=0x330 fm_port=0x388
+snd-es1688 port=0x220 irq=5 dma8=1 mpu_port=0x330 fm_port=0x388
+snd-es18xx port=0x220 irq=5 dma1=1 mpu_port=0x330 fm_port=0x388
+snd-sb8 port=0x220 irq=5 dma8=1
+snd-sb8 port=0x220 irq=7 dma8=1
+EOF
+	fi
+fi
+
+# Leave a note on the data partition (CRLF, so Notepad shows it right).
+{
+	echo "Apple II PC - sound card ($(date '+%Y-%m-%d %H:%M'))"
+	echo
+	if [ -n "$found" ]; then
+		echo "Found with: $found"
+	elif [ -n "$skip_isa" ]; then
+		echo "No PCI sound card; ISA search skipped (sound.txt: none)."
+	else
+		echo "No sound card found. For an ISA card, see sound.txt."
+	fi
+	echo
+	cat /proc/asound/cards 2>/dev/null
+} | sed 's/$/\r/' >"$DATA/sound-cards.txt" 2>/dev/null
+
+[ -n "$found" ]

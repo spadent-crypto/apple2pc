@@ -1,0 +1,45 @@
+# Apple II PC - 사운드 카드 설정 (ISA 카드용)
+#
+# 메인보드 내장 사운드(AC'97, HD Audio)와 PCI 사운드 카드는 저절로 잡히므로
+# 이 파일은 건드리지 않아도 됩니다.
+#
+# ISA 카드는 PnP 카드를 먼저 찾고, 그다음 사운드 블래스터 표준 설정
+# (포트 220, IRQ 5 또는 7, DMA 1/5, MPU 330, FM 388)으로 찾아봅니다.
+# 그래도 소리가 안 나면 아래 예에서 맞는 줄의 맨 앞 # 을 지우고,
+# 카드의 점퍼 설정이나 DOS 시절 SET BLASTER 값에 맞게 숫자를 고치세요.
+# 위에서부터 차례로 시도하고, 처음 잡힌 카드를 씁니다.
+# 결과는 부팅할 때마다 sound-cards.txt에 적힙니다.
+# PnP 카드용 드라이버도 port= 를 적으면 PnP 대신 그 포트를 봅니다(isapnp=0 자동).
+#
+# SET BLASTER=A220 I5 D1 H5 P330
+#   -> port=0x220 irq=5 dma8=1 dma16=5 mpu_port=0x330
+#
+# Sound Blaster 16 / Vibra 16 (PnP가 아닌 것)
+#snd-sb16 port=0x220 irq=5 dma8=1 dma16=5 mpu_port=0x330 fm_port=0x388
+#
+# Sound Blaster AWE32 / AWE64 (PnP가 아닌 것)
+#snd-sbawe port=0x220 irq=5 dma8=1 dma16=5 mpu_port=0x330 fm_port=0x388 awe_port=0x620
+#
+# Sound Blaster 1.x / 2.0 / Pro
+#snd-sb8 port=0x220 irq=7 dma8=1
+#
+# ESS AudioDrive ES688 / ES1688
+#snd-es1688 port=0x220 irq=5 dma8=1 mpu_port=0x330 fm_port=0x388
+#
+# ESS ES1868 / 1869 / 1878 / 1879 / 1887 / 1888
+#snd-es18xx port=0x220 irq=5 dma1=1 dma2=0 mpu_port=0x330 fm_port=0x388
+#
+# Windows Sound System 호환 (Crystal CS4231 / CS4248, AD1848)
+# (IRQ 9는 ACPI가 쓰는 PC가 많아서 피하는 게 좋습니다. 두 번째 DMA가 없으면 dma2=-1)
+#snd-cs4231 port=0x534 irq=10 dma1=3 dma2=-1
+#snd-ad1848 port=0x530 irq=11 dma1=0
+#
+# Yamaha OPL3-SA2 / SA3 (PnP가 아닌 것)
+#snd-opl3sa2 port=0x370 wss_port=0x530 fm_port=0x388 midi_port=0x330 irq=5 dma1=0 dma2=1
+#
+# Gravis UltraSound Classic / MAX
+#snd-gusclassic port=0x220 irq=5 dma1=1 dma2=3
+#snd-gusmax port=0x220 irq=5 dma1=1 dma2=3
+#
+# ISA 카드를 아예 찾지 않으려면 (부팅이 조금 빨라짐) 아래 줄의 # 을 지우세요.
+#none

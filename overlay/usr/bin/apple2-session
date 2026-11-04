@@ -48,6 +48,10 @@ if [ -r /sys/class/graphics/fb0/virtual_size ]; then
 	       -e "s/^Screen Height[ \t]*=.*/Screen Height = $H\r/" "$CONF"
 fi
 
+# Sound card: PCI drivers, then ISA cards (APPLE2/sound.txt). Before
+# LinApple, which opens the sound device when it starts.
+/usr/bin/apple2-sound
+
 # AC'97 and HD Audio chips often start muted.
 for ctl in Master PCM Front Headphone Speaker; do
 	amixer -q sset "$ctl" 85% unmute 2>/dev/null

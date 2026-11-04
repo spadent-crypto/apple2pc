@@ -10,6 +10,8 @@ disks\            디스크 이미지를 넣는 곳
 saves\            세이브 슬롯 0~9 (SaveStateN.aws + 저장 순간 화면 SaveStateN.bmp)
 wifi.txt          무선랜 이름과 비밀번호 (시계 맞추기용, 유선 랜만 쓰면 비워 두기)
 linapple.conf     에뮬레이터 설정 (기종, 속도, 슬롯 구성 등)
+sound.txt         ISA 사운드 카드의 포트/IRQ/DMA 설정 (내장·PCI는 저절로 잡힘)
+sound-cards.txt   부팅할 때 잡힌 사운드 카드 (부팅마다 새로 적힘)
 
 슬롯 구성
 ---------

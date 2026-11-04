@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1 2026-11-04). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1·v1.2 2026-11-04). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-04 (FujiNet 제거, SmartPort를 슬롯 7로)
+마지막 갱신: 2026-11-04 (v1.2: PCI·ISA 사운드 카드 확장)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,14 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-04, v1.2): 사운드 카드 확장
+- 사용자 요청: "PCI 카드 지원은 충분하게, ISA 카드도 기존 포트와 IRQ 설정을 기준으로 동작하게"
+- 커널: 흔한 내장·PCI 칩은 그대로 내장(y), 그 밖의 PCI 사운드 드라이버 대부분과 ISA(`CONFIG_ISA`, `ISAPNP`) 사운드 드라이버 전부를 모듈로. 펌웨어 `ess/`, `yamaha/`, `korg/`, `ea/` 추가. WaveFront·MultiSound(펌웨어 없음), SB16 CSP는 뺌
+- `overlay/usr/bin/apple2-sound` (LinApple 전에 동기 실행): PCI 오디오 장치(class 04xx) 모듈 로드 → 카드가 없을 때만 `APPLE2\sound.txt` 줄 → ISA PnP 드라이버(옵션 없이) → SB 표준 설정(220h, IRQ 5/7, DMA 1/5, MPU 330h, FM 388h) 순서. 결과를 `APPLE2\sound-cards.txt`(CRLF), 로그는 `/run/sound.log`
+- 알게 된 것: ISA PnP 겸용 드라이버(sb16, sbawe, es18xx, opl3sa2, cs4236 등)는 `isapnp` 기본값이 1이라 레거시 포트를 아예 안 봄 → `port=`가 있으면 그 모듈이 `isapnp` 파라미터를 가질 때 `isapnp=0`을 자동으로 붙임(.ko 안 `parm=isapnp:` 확인). `snd-cs4231`은 `dma2`를 안 주면 자동 선택하다 실패 → 두 번째 DMA가 없으면 `dma2=-1`
+- QEMU 확인: `-device sb16`(비PnP, 220h/5/1/5) 자동 인식, `-device cs4231a,irq=10` + sound.txt 한 줄로 인식, `-device AC97`은 내장 드라이버로 인식. QEMU에서는 IRQ 9가 ACPI라 WSS 예시는 IRQ 10
+- 아직 실기 ISA 카드로는 확인 못 함
 
 ### 변경 (2026-11-04): FujiNet 제거
 - 사용자 요청: "FujiNet 기능을 삭제하고 플로피와 HDD에 디스크 이미지 마운트해서 사용하는 것만"
@@ -120,7 +128,8 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 
 ## 6. 다음에 할 일 후보
 
-- [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드, 무선랜 칩 모델)
+- [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드 카드(`sound-cards.txt`), 무선랜 칩 모델)
+- [ ] (선택) 맥 QEMU 확인용 저해상도(640x480) 부팅 옵션
 - [ ] 무선랜 칩 모델 확인 → 필요한 드라이버·펌웨어 추가
 - [ ] 부팅 시간 측정·단축 (커널 크기, 서비스 순서)
 - [ ] (선택) 화면 하단 드라이브 LED 표시 끄기 옵션 (`Show Leds = 0`)
