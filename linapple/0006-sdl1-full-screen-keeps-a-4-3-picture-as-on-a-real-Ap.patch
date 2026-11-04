@@ -1,4 +1,4 @@
-From 8ce42d2efc2ee1d8e57015e792de3448d8b4459e Mon Sep 17 00:00:00 2001
+From 9f12035081ec669d2ead5263785de481d62e4c68 Mon Sep 17 00:00:00 2001
 From: build <build@localhost>
 Date: Wed, 4 Nov 2026 15:05:38 +0900
 Subject: [PATCH] sdl1: full screen keeps a 4:3 picture, as on a real Apple II
@@ -10,16 +10,22 @@ pixels, as a real Apple II monitor or TV showed it), pixel (square
 pixels, 560:384), stretch (fill the screen) or any W:H. The rest of the
 screen stays black with the picture in the middle.
 
+'Monitor Aspect' is the shape of the monitor's lit area: auto (default)
+takes the screen mode's pixels as square; a wide monitor that stretches a
+4:3 mode over its panel is named by its shape (16:9, 16:10, ...) so the
+picture still looks 4:3. Alt+F6 cycles through the shapes, refits the
+picture at once and keeps the choice in linapple.conf.
+
 Started full screen (-f), the picture used to fill the whole screen
 whatever its shape; it now gets the same fit as switching to full screen
 later.
 ---
- src/frontends/sdl1/Frame.cpp | 66 +++++++++++++++++++++++++++++++++---
- tests/test_frontend_sdl1.cpp | 49 +++++++++++++++++++++++---
- 2 files changed, 107 insertions(+), 8 deletions(-)
+ src/frontends/sdl1/Frame.cpp | 143 ++++++++++++++++++++++++++++++++++-
+ tests/test_frontend_sdl1.cpp |  69 ++++++++++++++++-
+ 2 files changed, 204 insertions(+), 8 deletions(-)
 
 diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
-index ae562afe..baa56ca8 100644
+index ae562afe..8fdc8fc4 100644
 --- a/src/frontends/sdl1/Frame.cpp
 +++ b/src/frontends/sdl1/Frame.cpp
 @@ -13,6 +13,7 @@
@@ -30,7 +36,21 @@ index ae562afe..baa56ca8 100644
  #include <array>
  #include <cstddef>
  #include <cstdint>
-@@ -220,12 +221,63 @@ auto handle_btn_cycle(int mod) -> void {
+@@ -159,7 +160,13 @@ auto handle_btn_drive(int drive_idx, int mod) -> void {
+   }
+ }
+ 
++auto cycle_monitor_aspect() -> void;
++
+ auto handle_btn_fullscreen(int mod) -> void {
++  if ((mod & KMOD_ALT) != 0) {
++    cycle_monitor_aspect();
++    return;
++  }
+   if ((mod & KMOD_SHIFT) != 0) {
+     if ((current_language != A2LANG_US) &&
+         ((current_apple2_type == A2TYPE_APPLE2E) ||
+@@ -220,13 +227,94 @@ auto handle_btn_cycle(int mod) -> void {
    video_redraw_screen();
  }
  
@@ -42,37 +62,59 @@ index ae562afe..baa56ca8 100644
 +//   stretch  fill the whole screen
 +//   W:H      any other shape, e.g. 3:2
 +// What is left of the screen stays black, with the picture in the middle.
++//
++// "Monitor Aspect" is the shape of the monitor's lit area. "auto" (default)
++// takes the screen mode's pixels as square. A wide monitor that stretches a
++// 4:3 mode such as 1024x768 over its whole panel makes them wide; naming its
++// shape (16:9, 16:10, ...) lets the picture still look 4:3. Alt+F6 cycles it.
 +struct FullScreenAspect {
 +  int w = 4;
 +  int h = 3;
 +  bool stretch = false;
++  int monitor_w = 0;  // 0: "auto"
++  int monitor_h = 0;
 +};
 +
-+auto full_screen_aspect() -> FullScreenAspect {
-+  FullScreenAspect aspect;
++auto normalized_config(const char* key) -> std::string {
 +  std::string value;
-+  if (!config_load_string("Configuration", "Full Screen Aspect", &value)) {
-+    return aspect;
++  if (!config_load_string("Configuration", key, &value)) {
++    return {};
 +  }
 +  value.erase(std::remove_if(value.begin(), value.end(),
-+                             [](unsigned char c) { return c == ' ' || c == '\t' || c == '\r'; }),
++                             [](unsigned char c) {
++                               return c == ' ' || c == '\t' || c == '\r';
++                             }),
 +              value.end());
 +  std::transform(value.begin(), value.end(), value.begin(),
 +                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  return value;
++}
++
++auto parse_ratio(const std::string& value, int* w, int* h) -> bool {
++  int a = 0;
++  int b = 0;
++  if (std::sscanf(value.c_str(), "%d:%d", &a, &b) == 2 && a > 0 && b > 0 &&
++      a <= 100 && b <= 100) {
++    *w = a;
++    *h = b;
++    return true;
++  }
++  return false;
++}
++
++auto full_screen_aspect() -> FullScreenAspect {
++  FullScreenAspect aspect;
++  const std::string value = normalized_config("Full Screen Aspect");
 +  if (value == "stretch") {
 +    aspect.stretch = true;
 +  } else if (value == "pixel") {
 +    aspect.w = SCREEN_WIDTH;
 +    aspect.h = SCREEN_HEIGHT;
 +  } else {
-+    int w = 0;
-+    int h = 0;
-+    if (std::sscanf(value.c_str(), "%d:%d", &w, &h) == 2 && w > 0 && h > 0 &&
-+        w <= 100 && h <= 100) {
-+      aspect.w = w;
-+      aspect.h = h;
-+    }
++    parse_ratio(value, &aspect.w, &aspect.h);
 +  }
++  parse_ratio(normalized_config("Monitor Aspect"), &aspect.monitor_w,
++              &aspect.monitor_h);
 +  return aspect;
 +}
 +
@@ -82,21 +124,78 @@ index ae562afe..baa56ca8 100644
 +    aspect = full_screen_aspect();
 +  } catch (...) {
 +  }
-+  if (aspect.stretch) {
++  if (aspect.stretch || width <= 0 || height <= 0) {
 +    return SDL_Rect{0, 0, static_cast<uint16_t>(width),
 +                    static_cast<uint16_t>(height)};
 +  }
++  // Width over height the picture needs in screen pixels: its shape, times
++  // how much wider than tall a screen pixel shows on the monitor.
++  double ratio = static_cast<double>(aspect.w) / aspect.h;
++  if (aspect.monitor_w > 0) {
++    ratio *= (static_cast<double>(width) / height) /
++             (static_cast<double>(aspect.monitor_w) / aspect.monitor_h);
++  }
    int target_w = width;
 -  int target_h = (target_w * SCREEN_HEIGHT) / SCREEN_WIDTH;
-+  int target_h = (target_w * aspect.h) / aspect.w;
++  int target_h = static_cast<int>(width / ratio + 1e-6);
    if (target_h > height) {
      target_h = height;
 -    target_w = (target_h * SCREEN_WIDTH) / SCREEN_HEIGHT;
-+    target_w = (target_h * aspect.w) / aspect.h;
++    target_w = static_cast<int>(height * ratio + 1e-6);
    }
++  target_w = std::min(target_w, width);
    const int offset_x = (width - target_w) / 2;
    const int offset_y = (height - target_h) / 2;
-@@ -925,9 +977,15 @@ auto frame_create_window() -> int {
+   return SDL_Rect{
+@@ -234,6 +322,47 @@ auto compute_aspect_fit_rect(int width, int height) noexcept -> SDL_Rect {
+       static_cast<uint16_t>(target_w), static_cast<uint16_t>(target_h)};
+ }
+ 
++// Alt+F6: the next monitor shape; the picture is fitted again at once and
++// the choice is kept in linapple.conf.
++auto cycle_monitor_aspect() -> void {
++  static const std::array<const char*, 6> shapes{"auto", "16:9", "16:10",
++                                                  "5:4",  "3:2",  "4:3"};
++  const std::string current = normalized_config("Monitor Aspect");
++  size_t next = 1;
++  for (size_t i = 0; i < shapes.size(); ++i) {
++    if (current == shapes[i]) {
++      next = (i + 1) % shapes.size();
++      break;
++    }
++  }
++  if (current.empty()) {
++    next = 1;
++  }
++  config_save_string("Configuration", "Monitor Aspect", shapes[next]);
++  Configuration::instance().save();
++
++  {
++    const std::lock_guard<std::recursive_mutex> lock(video_draw_mutex);
++    if (is_fullscreen && window_resized) {
++      new_rect = compute_aspect_fit_rect(
++          static_cast<int>(system_state.screen_width),
++          static_cast<int>(system_state.screen_height));
++    }
++    if (texture != nullptr) {
++      SDL_FillRect(texture.get(), nullptr, 0);
++    }
++    if (screen != nullptr) {
++      SDL_FillRect(screen, nullptr, 0);
++    }
++  }
++  std::string msg = std::string("Monitor shape: ") + shapes[next];
++  if (next == 0) {
++    msg += " (screen pixels square)";
++  }
++  osd_toast(msg.c_str());
++  draw_apple_content();
++}
++
+ // A load can take the mouse card away; a captured pointer would feed nothing.
+ auto load_save_state() -> void {
+   save_state_load();
+@@ -925,9 +1054,15 @@ auto frame_create_window() -> int {
           system_state.screen_height);
    if (window_resized) {
      orig_rect = SDL_Rect{0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
@@ -115,7 +214,7 @@ index ae562afe..baa56ca8 100644
    return 0;
  }
 diff --git a/tests/test_frontend_sdl1.cpp b/tests/test_frontend_sdl1.cpp
-index 44f4bb44..a99e8e35 100644
+index 44f4bb44..49564728 100644
 --- a/tests/test_frontend_sdl1.cpp
 +++ b/tests/test_frontend_sdl1.cpp
 @@ -108,11 +108,12 @@ TEST_CASE("SDL1 Frontend Fullscreen Toggle Preserves Scaled Dimensions") {
@@ -135,7 +234,7 @@ index 44f4bb44..a99e8e35 100644
    CHECK(new_rect.y == 0);
  
    // 3. Return to windowed mode (F6)
-@@ -133,6 +134,46 @@ TEST_CASE("SDL1 Frontend Fullscreen Toggle Preserves Scaled Dimensions") {
+@@ -133,6 +134,66 @@ TEST_CASE("SDL1 Frontend Fullscreen Toggle Preserves Scaled Dimensions") {
    SDL_Quit();
  }
  
@@ -171,6 +270,26 @@ index 44f4bb44..a99e8e35 100644
 +  CHECK(new_rect.w == 1280);
 +  CHECK(new_rect.h == 800);
 +  CHECK(new_rect.x == 0);
++  frame_destroy_window();
++
++  // A 1024x768 mode on a 16:10 monitor that stretches it over the panel:
++  // "Monitor Aspect = 16:10" narrows the picture so it still looks 4:3,
++  // ratio 4/3 * (1024/768) / (16/10) = 1.111 -> 853x768 at x = 85.
++  config_set_string("Configuration", "Full Screen Aspect", "4:3");
++  config_set_string("Configuration", "Monitor Aspect", "16:10");
++  system_state.screen_width = 1024;
++  system_state.screen_height = 768;
++  REQUIRE(frame_create_window() == 0);
++  CHECK(new_rect.w == 853);
++  CHECK(new_rect.h == 768);
++  CHECK(new_rect.x == 85);
++  frame_destroy_window();
++
++  // "auto": the mode's pixels taken as square -> 1024x768 fills a 4:3 mode.
++  config_set_string("Configuration", "Monitor Aspect", "auto");
++  REQUIRE(frame_create_window() == 0);
++  CHECK(new_rect.w == 1024);
++  CHECK(new_rect.h == 768);
 +  frame_destroy_window();
 +
 +  config_set_string("Configuration", "Full Screen Aspect", "4:3");

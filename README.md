@@ -5,7 +5,7 @@
 
 | 기능 | 내용 |
 |---|---|
-| 바로 부팅 | GRUB 메뉴·대기 없음, 커널 메시지 숨김, 화면 해상도에 맞춰 전체화면. 애플 화면은 실기 모니터처럼 4:3으로, 남는 부분은 검게 (`linapple.conf`의 `Full Screen Aspect`로 `pixel`·`stretch`·`W:H`도 가능) |
+| 바로 부팅 | GRUB 메뉴·대기 없음, 커널 메시지 숨김, 화면 해상도에 맞춰 전체화면. 애플 화면은 실기 모니터처럼 4:3으로, 남는 부분은 검게 (`linapple.conf`의 `Full Screen Aspect`로 `pixel`·`stretch`·`W:H`도 가능). 와이드 모니터가 4:3 화면을 늘려 보여주면 **Alt+F6**으로 모니터 모양(16:9, 16:10 등)을 골라 눈으로 4:3이 되게 맞춤 |
 | 세이브 | Ctrl+Shift+0~9 저장(화면 캡처 함께), Ctrl+0~9 불러오기, F11/F10 썸네일 화면 |
 | SmartPort | 슬롯 7. 하드디스크 2개 + UniDisk 3.5 드라이브 2개. 먼저 부팅하고, 비어 있으면 5.25"로 넘어감 |
 | 5.25" | 슬롯 6. Disk II 드라이브 2개 (.dsk .do .po .nib .woz) |
@@ -61,6 +61,7 @@ README.TXT        키 안내
 | F5 | 5.25" 드라이브 맞바꾸기 |
 | Ctrl+F2 / Ctrl+F10 | 재부팅 / Ctrl+Reset |
 | F7 / F8 / F9 | 디버거 / 스크린샷 / 화면 모드 |
+| Alt+F6 | 모니터 모양 바꾸기 (auto/16:9/16:10/5:4/3:2/4:3, 저장됨) |
 | ScrollLock | 최고 속도 |
 | F12 | 종료, 전원 꺼짐 |
 | Ctrl+Alt+F2 | 리눅스 셸 (Alt+F1로 복귀) |
@@ -141,6 +142,6 @@ LinApple 패치:
 3. SmartPort 카드(하드 2 + UniDisk 3.5 2)와 FujiNet 카드(이미지에서는 쓰지 않음), 전체화면 해상도, 세이브 즉시 기록
 4. 넣은 디스크를 다음 부팅 때 그대로 넣기
 5. SuperSprite 카드
-6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 전체화면으로 시작할 때도 적용
+6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 모니터 모양 보정(`Monitor Aspect`, Alt+F6), 전체화면으로 시작할 때도 적용
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.
