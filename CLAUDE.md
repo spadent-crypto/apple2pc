@@ -13,8 +13,9 @@
 - LinApple을 고쳤다면 `linapple/*.patch`를 다시 만드세요. 기준 커밋은 `build.sh`의 `LINAPPLE_COMMIT`입니다.
 
 ## 이미지 파일
-- `*.img`, `*.img.zip`은 커밋하지 않습니다(.gitignore).
-- 이 작업 환경에서는 GitHub Releases를 만들 수 없습니다. 완성 이미지는 대화에서 파일로 전달하고, 사용자가 원하면 직접 Releases에 올립니다.
+- 완성 이미지는 사용자 요청(2026-11-04)에 따라 `images/apple2pc-vX.Y-YYYY-MM-DD.img.zip`으로 버전별 커밋합니다. `images/SHA256SUMS`와 `images/README.md` 표도 함께 고칩니다.
+- `out/`, `work/`, 그 밖의 `*.img`, `*.img.zip`은 커밋하지 않습니다(.gitignore).
+- 이 작업 환경에서는 GitHub Releases를 만들 수 없습니다(REST API도 403). 대화에서도 파일로 전달합니다.
 
 ## 빌드 환경 메모
 - Ubuntu 24.04 x86_64, root. `./build.sh` (전체) 또는 `./build.sh rootfs image`.

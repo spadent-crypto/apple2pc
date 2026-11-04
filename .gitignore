@@ -2,3 +2,5 @@ work/
 out/
 *.img
 *.img.zip
+# version images are kept under images/
+!images/*.img.zip
