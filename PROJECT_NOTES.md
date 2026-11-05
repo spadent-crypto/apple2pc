@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-04 (v1.8: 메뉴에 3:2 해상도)
+마지막 갱신: 2026-11-05 (v1.9: 실기 성능 — CPU 최대 클럭, 화면 쓰기 결합)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,14 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 변경 (2026-11-05, v1.9): 실기 성능
+- 사용자 보고: ThinkPad X61s(Core 2 Duo LV, GMA X3100, HDA AD1984)에서 부팅·실행은 되지만 **게임과 소리가 모두 느림** → 에뮬레이션이 실시간보다 느림
+- 원인 후보 1: 커널 기본 cpufreq 거버너가 userspace(i386_defconfig 기본) → CPU가 BIOS가 둔 클럭(노트북은 흔히 최저)에 머묾. `CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y`, 세션에서도 모든 CPU에 performance
+- 원인 후보 2: vesafb는 `mtrr` 기본값 0이라 프레임버퍼를 `ioremap`(uncached)으로 매핑 → 실기에서 화면 쓰기가 매우 느림(QEMU에서는 안 드러남). 커널 명령줄에 `video=vesafb:mtrr:3`(쓰기 결합, PAT 없으면 MTRR WC)
+- `overlay/usr/bin/apple2-sysinfo`: LinApple 시작 12초 뒤 `APPLE2\system-info.txt`에 CPU 모델·클럭·거버너·드라이버, 화면 모드와 vesafb/MTRR/PAT 메시지, 사운드 카드와 hw_params·status, 메모리, LinApple 마지막 메시지
+- QEMU 확인: 부팅·화면 정상, system-info.txt 생성(QEMU HDA는 dmix 48000Hz, period 1024, buffer 16384). 실기 효과는 사용자 확인 대기
+- 다음 후보(효과 부족하면): 사운드를 dmix 대신 plughw로, 화면 16비트 유지 확인, LinApple 프레임 그리기 비용 측정
 
 ### 변경 (2026-11-04, v1.8): 3:2 해상도
 - 메뉴 해상도 목록에 3:2(1152x768, 1280x854, 1440x960, 1920x1280, 2160x1440)와 1920x1200 추가, display.txt 예시를 비율별로 정리. Monitor shape에는 원래 3:2가 있었음

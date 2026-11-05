@@ -42,6 +42,7 @@ cpu_line() {
 	echo "  mode: $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)" \
 		"x $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null) bit," \
 		"driver $(cat /proc/fb 2>/dev/null | head -n 1)"
+	dmesg 2>/dev/null | grep -iE "vesafb|x86/PAT|mtrr" | grep -v "command line" | sed "s/^/  /" | head -n 16
 	echo
 	echo "[Sound]"
 	cat /proc/asound/cards 2>/dev/null || echo "  no sound card"

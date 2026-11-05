@@ -15,6 +15,7 @@ display.txt       화면 설정: LCD 해상도(RESOLUTION), 비율/선명함 우
 sound.txt         ISA 사운드 카드의 포트/IRQ/DMA 설정 (내장·PCI는 저절로 잡힘)
 sound-cards.txt   부팅할 때 잡힌 사운드 카드 (부팅마다 새로 적힘)
 grow.txt          처음 켤 때 이 파티션을 장치 끝까지 늘린 기록
+system-info.txt   CPU 클럭, 화면 모드, 사운드 장치 상태 (부팅마다 새로 적힘, 느리거나 소리가 이상할 때 확인)
 
 화면
 ----
