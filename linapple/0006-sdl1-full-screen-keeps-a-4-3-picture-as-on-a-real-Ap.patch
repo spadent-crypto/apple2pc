@@ -1,8 +1,8 @@
 From c7f5b6308aae7dce4a0e1f943570f2aba7bc9585 Mon Sep 17 00:00:00 2001
 From: build <build@localhost>
 Date: Wed, 4 Nov 2026 15:05:38 +0900
-Subject: [PATCH] sdl1: full screen keeps a 4:3 picture, as on a real Apple II
- monitor
+Subject: [PATCH 6/9] sdl1: full screen keeps a 4:3 picture, as on a real Apple
+ II monitor
 
 'Full Screen Aspect' in linapple.conf sets the shape the picture keeps in
 full screen: 4:3 (default; the 560x384 picture with taller-than-wide

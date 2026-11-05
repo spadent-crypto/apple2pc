@@ -1,7 +1,7 @@
-From 04843a4b961048885c963d4a88cd5c609418e09a Mon Sep 17 00:00:00 2001
+From b8e080d6a411206988120030e9a414e826216788 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Mon, 19 Oct 2026 09:49:17 +0900
-Subject: [PATCH 1/4] sdl1: save slots with screenshots, on-screen messages and
+Subject: [PATCH 1/9] sdl1: save slots with screenshots, on-screen messages and
  a slot picker
 
 Quick save (modifier+Shift+0..9) now also writes SaveState<n>.bmp, a
@@ -25,7 +25,7 @@ save_state_save() now returns whether the state was written.
  create mode 100644 src/frontends/sdl1/SnapshotGallery.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d8154a4..b14dea6 100644
+index d8154a49..b14dea61 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -473,6 +473,7 @@ set(SOURCES_FE_SDL1
@@ -37,7 +37,7 @@ index d8154a4..b14dea6 100644
  
  set(SOURCES_FE_HEADLESS
 diff --git a/src/frontends/common/SaveStateManager.cpp b/src/frontends/common/SaveStateManager.cpp
-index ea756ab..8854e3c 100644
+index ea756abf..8854e3cf 100644
 --- a/src/frontends/common/SaveStateManager.cpp
 +++ b/src/frontends/common/SaveStateManager.cpp
 @@ -108,7 +108,7 @@ auto save_state_load() -> bool {
@@ -79,7 +79,7 @@ index ea756ab..8854e3c 100644
  
  auto save_state_startup() -> void {
 diff --git a/src/frontends/common/SaveStateManager.h b/src/frontends/common/SaveStateManager.h
-index 1805465..e0064a2 100644
+index 18054658..e0064a2d 100644
 --- a/src/frontends/common/SaveStateManager.h
 +++ b/src/frontends/common/SaveStateManager.h
 @@ -7,7 +7,8 @@ auto save_state_get_filename() -> const char*;
@@ -93,7 +93,7 @@ index 1805465..e0064a2 100644
  auto save_state_startup() -> void;
  auto save_state_shutdown() -> void;
 diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
-index a75d806..b1ae928 100644
+index a75d8061..b1ae928c 100644
 --- a/src/frontends/sdl1/Frame.cpp
 +++ b/src/frontends/sdl1/Frame.cpp
 @@ -46,6 +46,7 @@
@@ -186,7 +186,7 @@ index a75d806..b1ae928 100644
  }  // namespace
 diff --git a/src/frontends/sdl1/SnapshotGallery.cpp b/src/frontends/sdl1/SnapshotGallery.cpp
 new file mode 100644
-index 0000000..5b077f8
+index 00000000..5b077f8d
 --- /dev/null
 +++ b/src/frontends/sdl1/SnapshotGallery.cpp
 @@ -0,0 +1,527 @@
@@ -719,7 +719,7 @@ index 0000000..5b077f8
 +}
 diff --git a/src/frontends/sdl1/SnapshotGallery.h b/src/frontends/sdl1/SnapshotGallery.h
 new file mode 100644
-index 0000000..fff1019
+index 00000000..fff10199
 --- /dev/null
 +++ b/src/frontends/sdl1/SnapshotGallery.h
 @@ -0,0 +1,33 @@

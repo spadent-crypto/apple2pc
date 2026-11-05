@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v1.10 2026-11-06). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-05 (v1.9: 실기 성능 — CPU 최대 클럭, 화면 쓰기 결합)
+마지막 갱신: 2026-11-06 (v1.10: 볼륨 키, 화면 확대 속도 약 4배)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,16 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-06, v1.10): 볼륨 조절, 화면 확대 속도
+- 사용자 보고: "볼륨 조절이 안 되네?" → 그동안 세션이 amixer로 85%만 고정하고 키가 없었음
+- LinApple 패치 8 (`sdl1/Volume.{h,cpp}`, SDL_Input.cpp KEYDOWN 맨 앞에서 호출): Alt+F7/Alt+F8 = 5%씩 내리기/올리기, 키보드 볼륨 다운/업/음소거 키. `amixer -M sset <첫 컨트롤>`(Master→PCM→Speaker→Front→Headphone), OSD 막대 표시, `linapple.conf`의 `Master Volume`에 저장(음소거는 0)
+- 알게 된 것: SDL1 fbcon은 리눅스 키코드를 scancode로 넘김(113 음소거, 114 다운, 115 업). 커널 키맵 때문에 음소거(113)는 SDLK_UNKNOWN이 아닌 키 심볼을 받음 → fbcon에서는 scancode만으로 판단. X11에서는 키코드+8이라(113=왼쪽 화살표) fbcon일 때만 그렇게 함
+- 세션: `Master Volume`(기본 85, 100 상한)을 첫 컨트롤에 적용, 나머지 주요 컨트롤은 100%. Lenovo/IBM이면 `thinkpad_acpi` 로드(볼륨 버튼이 이 드라이버로 들어옴). 커널에 `THINKPAD_ACPI=m`(+DRM/I2C/BACKLIGHT m)
+- QEMU 확인(AC'97): Alt+F7 74%, Alt+F8 89%, 음소거 "muted", 볼륨 업 94%, F12 뒤 conf에 `Master Volume = 94`. Alt+F7가 디버거(F7)로 새던 버그 고침
+- 사용자 질문: "1024x768에서 가로세로 2배 정수배로만 확대하면 부담이 덜하지 않나?" → 가로 2배는 1120이라 1024에 안 들어감. 실제 비용은 배율이 아니라 확대 코드가 **픽셀마다 64비트 나눗셈**(32비트 x86에서 `__divdi3` 함수 호출)을 하던 것
+- LinApple 패치 9 (`common/VideoStretch.cpp`): 열 위치는 캐시한 표로, 원본 한 줄은 한 번만 RAM의 줄 버퍼에 확대한 뒤 그 줄을 보여주는 화면 줄마다 memcpy(프레임버퍼는 쓰기만). 결과는 픽셀 단위로 같음(옛 공식과 비교하는 테스트 추가, 16/32비트, 잘림 포함)
+- 측정(2.1GHz Xeon 1코어, dummy 드라이버, 20초 평균 CPU): 1024x768 26% → 7%, 800x600 17% → 6%, 640x480 12% → 5%, SHARP 1024x768 25% → 6%. 펜티엄 3 1GHz에서도 1024x768 실시간이 될 것으로 예상(실기 확인 대기)
 
 ### 변경 (2026-11-05, v1.9): 실기 성능
 - 사용자 보고: ThinkPad X61s(Core 2 Duo LV, GMA X3100, HDA AD1984)에서 부팅·실행은 되지만 **게임과 소리가 모두 느림** → 에뮬레이션이 실시간보다 느림
@@ -145,7 +155,7 @@
 |---|---|---|
 | Linux | github.com/gregkh/linux | v6.12.47 |
 | BusyBox | github.com/mirror/busybox | 371fe9f7 (Buildroot 2026.08 설정 + static + ntpd) |
-| LinApple | github.com/linappleii/linapple | 86bee1c2 + `linapple/*.patch` 5개 |
+| LinApple | github.com/linappleii/linapple | 86bee1c2 + `linapple/*.patch` 9개 |
 | SDL 1.2 | github.com/libsdl-org/SDL-1.2 | 81490298 (fbcon + ALSA, 32비트) |
 | wpa_supplicant | archive.ubuntu.com pool, wpa_2.11.orig | 2.11 |
 | glibc, OpenSSL, ALSA, libnl, expat | Ubuntu 24.04 i386 패키지 | noble |
@@ -157,6 +167,10 @@ LinApple 패치:
 3. SmartPort·FujiNet 카드, `Screen Width/Height` 읽기, 전체화면 시작 시 커서 숨김, 세이브 후 sync
 4. F3/F4로 넣은 디스크를 설정 파일에 바로 저장
 5. SuperSprite 카드 (`src/apple2/chips/TMS9918A.*`, `src/apple2/peripherals/supersprite/`), HostInterface에 `SetVideoOverlay` 추가 (Video.cpp `video_set_overlay`)
+6. 전체화면 4:3(`Full Screen Aspect`), 모니터 모양(`Monitor Aspect`, Alt+F6), 확대 방식(`Scale Mode` aspect/sharp)
+7. 화면 설정 메뉴(Alt+F9, `DisplayMenu.cpp`)
+8. 볼륨 키(Alt+F7/F8, 키보드 볼륨·음소거 키, `Volume.cpp`)
+9. 빠른 소프트웨어 확대(열 표 + 원본 줄 한 번만 확대)
 
 ## 5. 다시 빌드하는 법
 
@@ -179,6 +193,8 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 ## 6. 다음에 할 일 후보
 
 - [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드 카드(`sound-cards.txt`), 무선랜 칩 모델)
+- [ ] X61s에서 v1.10 확인: 게임·소리 속도, 볼륨 버튼(thinkpad_acpi), `system-info.txt` 받아 보기
+- [ ] LG gram 14Z970: BIOS(Boot Mode/CSM) 진입 결과 대기
 - [ ] (선택) 맥 QEMU 확인용 저해상도(640x480) 부팅 옵션
 - [ ] 실기에서 해상도별 속도 확인 (특히 auto·1280x1024 이상)
 - [ ] LinApple 기존 테스트 실패(Alt+1 quick-save 이름) 원인 확인

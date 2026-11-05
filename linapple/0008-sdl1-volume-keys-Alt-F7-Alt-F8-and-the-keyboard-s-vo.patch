@@ -1,0 +1,283 @@
+From a18507df471acc8e7d2fc4e43d4f8c7d3691204d Mon Sep 17 00:00:00 2001
+From: build <build@localhost>
+Date: Fri, 6 Nov 2026 07:17:13 +0900
+Subject: [PATCH 8/9] sdl1: volume keys (Alt+F7/Alt+F8 and the keyboard's
+ volume keys)
+
+Alt+F7 and Alt+F8, and the keyboard's Volume Down, Volume Up and Mute
+keys (Linux key codes 114, 115 and 113, which the framebuffer console
+hands SDL as scancodes), change the sound card's main volume through
+amixer in 5% steps, show the level on screen and keep it in
+linapple.conf as Master Volume.
+---
+ CMakeLists.txt                   |   1 +
+ src/frontends/sdl1/SDL_Input.cpp |   4 +
+ src/frontends/sdl1/Volume.cpp    | 160 +++++++++++++++++++++++++++++++
+ src/frontends/sdl1/Volume.h      |  19 ++++
+ tests/test_frontend_sdl1.cpp     |  19 ++++
+ 5 files changed, 203 insertions(+)
+ create mode 100644 src/frontends/sdl1/Volume.cpp
+ create mode 100644 src/frontends/sdl1/Volume.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f3359359..b16857d7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -469,6 +469,7 @@ set(SOURCES_FE_SDL1
+     ${SOURCES_FE_COMMON_SDL}
+     src/frontends/sdl1/DiskChoose.cpp
+     src/frontends/sdl1/DisplayMenu.cpp
++    src/frontends/sdl1/Volume.cpp
+     src/frontends/sdl1/Frame.cpp
+     src/frontends/sdl1/Main.cpp
+     src/frontends/sdl1/SDL_Asset.cpp
+diff --git a/src/frontends/sdl1/SDL_Input.cpp b/src/frontends/sdl1/SDL_Input.cpp
+index 07b65475..d0cdb49a 100644
+--- a/src/frontends/sdl1/SDL_Input.cpp
++++ b/src/frontends/sdl1/SDL_Input.cpp
+@@ -24,6 +24,7 @@
+ #include "frontends/common/KeyboardTranslator.h"
+ #include "frontends/common/sdl/JoystickFrontend.h"
+ #include "frontends/common/sdl/MouseInput.h"
++#include "frontends/sdl1/Volume.h"
+ #include "frontends/sdl1/Frame.h"
+ 
+ namespace {
+@@ -423,6 +424,9 @@ auto sdl_handle_event(SDL_Event* event) -> void {
+       break;
+ 
+     case SDL_KEYDOWN:
++      if (volume_handle_key(event->key.keysym)) {
++        break;
++      }
+       handle_key_down(event->key.keysym.sym, event->key.keysym.mod,
+                       sdl1_hid_usage(event->key.keysym));
+       break;
+diff --git a/src/frontends/sdl1/Volume.cpp b/src/frontends/sdl1/Volume.cpp
+new file mode 100644
+index 00000000..e71e0ea6
+--- /dev/null
++++ b/src/frontends/sdl1/Volume.cpp
+@@ -0,0 +1,160 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Sound card volume keys: Alt+F7 / Alt+F8 and the keyboard's volume keys.
++
++#include "frontends/sdl1/Volume.h"
++
++#include <SDL/SDL_keysym.h>
++#include <SDL/SDL_video.h>
++
++#include <array>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++#include "core/Registry.h"
++#include "frontends/sdl1/SnapshotGallery.h"
++
++namespace {
++
++// Linux input key codes, which the framebuffer console hands SDL as
++// scancodes; SDL has no key symbol for them.
++constexpr int key_mute = 113;
++constexpr int key_volume_down = 114;
++constexpr int key_volume_up = 115;
++
++constexpr int step_percent = 5;
++
++auto on_fbcon() -> bool {
++  static int fbcon = -1;
++  if (fbcon < 0) {
++    std::array<char, 32> name{};
++    fbcon = (SDL_VideoDriverName(name.data(), static_cast<int>(name.size())) !=
++                 nullptr &&
++             std::strcmp(name.data(), "fbcon") == 0)
++                ? 1
++                : 0;
++  }
++  return fbcon == 1;
++}
++
++auto run(const std::string& command) -> std::string {
++  std::string out;
++  FILE* p = popen((command + " 2>/dev/null").c_str(), "r");
++  if (p == nullptr) {
++    return out;
++  }
++  std::array<char, 256> buf{};
++  while (std::fgets(buf.data(), static_cast<int>(buf.size()), p) != nullptr) {
++    out += buf.data();
++  }
++  pclose(p);
++  return out;
++}
++
++// The first of the usual main controls the sound card has, or "".
++auto main_control() -> const std::string& {
++  static std::string control;
++  static bool looked = false;
++  if (!looked) {
++    looked = true;
++    for (const char* c : {"Master", "PCM", "Speaker", "Front", "Headphone"}) {
++      if (volume_parse_percent(run(std::string("amixer -M sget '") + c + "'")) >=
++          0) {
++        control = c;
++        break;
++      }
++    }
++  }
++  return control;
++}
++
++auto show(int percent, bool muted) -> void {
++  std::string bar(static_cast<size_t>((percent + 5) / 10), '#');
++  bar.resize(10, '.');
++  std::array<char, 64> msg{};
++  if (muted) {
++    std::snprintf(msg.data(), msg.size(), "Volume: muted");
++  } else {
++    std::snprintf(msg.data(), msg.size(), "Volume %3d%%  [%s]", percent,
++                  bar.c_str());
++  }
++  osd_toast(msg.data());
++}
++
++auto apply(const char* change) -> void {
++  const std::string& control = main_control();
++  if (control.empty()) {
++    osd_toast("Volume: no sound card");
++    return;
++  }
++  const std::string out =
++      run("amixer -M sset '" + control + "' " + change);
++  const int percent = volume_parse_percent(out);
++  if (percent < 0) {
++    osd_toast("Volume: could not change it");
++    return;
++  }
++  const bool muted = volume_parse_muted(out);
++  show(percent, muted);
++  config_save_string("Configuration", "Master Volume",
++                     std::to_string(muted ? 0 : percent).c_str());
++  Configuration::instance().save();
++}
++
++}  // namespace
++
++auto volume_parse_percent(const std::string& amixer_output) -> int {
++  // The first "[NN%]".
++  for (size_t i = amixer_output.find('['); i != std::string::npos;
++       i = amixer_output.find('[', i + 1)) {
++    const size_t end = amixer_output.find("%]", i);
++    if (end == std::string::npos) {
++      break;
++    }
++    const std::string n = amixer_output.substr(i + 1, end - i - 1);
++    if (!n.empty() && n.size() <= 3 &&
++        n.find_first_not_of("0123456789") == std::string::npos) {
++      return std::atoi(n.c_str());
++    }
++  }
++  return -1;
++}
++
++auto volume_parse_muted(const std::string& amixer_output) -> bool {
++  const size_t on = amixer_output.find("[on]");
++  const size_t off = amixer_output.find("[off]");
++  return off != std::string::npos && (on == std::string::npos || off < on);
++}
++
++auto volume_handle_key(const SDL_keysym& keysym) -> bool {
++  const bool alt = (keysym.mod & KMOD_ALT) != 0;
++  // On the framebuffer console the scancode is the Linux key code, and the
++  // kernel keymap may give some of these keys a key symbol (Mute does), so
++  // go by the scancode alone there. Elsewhere (X11 adds 8: 113 is Left)
++  // only keys SDL has no symbol for.
++  if (keysym.sym == SDLK_UNKNOWN || on_fbcon()) {
++    switch (keysym.scancode) {
++      case key_volume_down:
++        apply((std::to_string(step_percent) + "%- unmute").c_str());
++        return true;
++      case key_volume_up:
++        apply((std::to_string(step_percent) + "%+ unmute").c_str());
++        return true;
++      case key_mute:
++        apply("toggle");
++        return true;
++      default:
++        break;
++    }
++  }
++  if (alt && keysym.sym == SDLK_F7) {
++    apply((std::to_string(step_percent) + "%- unmute").c_str());
++    return true;
++  }
++  if (alt && keysym.sym == SDLK_F8) {
++    apply((std::to_string(step_percent) + "%+ unmute").c_str());
++    return true;
++  }
++  return false;
++}
+diff --git a/src/frontends/sdl1/Volume.h b/src/frontends/sdl1/Volume.h
+new file mode 100644
+index 00000000..c6e5093b
+--- /dev/null
++++ b/src/frontends/sdl1/Volume.h
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#pragma once
++
++#include <SDL/SDL_keyboard.h>
++
++#include <string>
++
++// Sound card volume for the Apple II PC boot image: Alt+F7 / Alt+F8 and the
++// keyboard's own volume keys (Volume Down, Volume Up, Mute) change the sound
++// card's main volume through amixer, show it on screen and keep it in
++// linapple.conf ("Master Volume"), which the session applies at start.
++
++// Handles a volume key; true when the key was one (and is used up).
++auto volume_handle_key(const SDL_keysym& keysym) -> bool;
++
++// The level, 0-100, in amixer output such as "... [72%] [on]", or -1.
++auto volume_parse_percent(const std::string& amixer_output) -> int;
++// Whether that output says the control is muted ("[off]").
++auto volume_parse_muted(const std::string& amixer_output) -> bool;
+diff --git a/tests/test_frontend_sdl1.cpp b/tests/test_frontend_sdl1.cpp
+index 8a6c8e29..2dc86644 100644
+--- a/tests/test_frontend_sdl1.cpp
++++ b/tests/test_frontend_sdl1.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "SDL_active.h"
+ #include "frontends/sdl1/DisplayMenu.h"
++#include "frontends/sdl1/Volume.h"
+ #include "SDL_events.h"
+ #include "SDL_keyboard.h"
+ #include "SDL_keysym.h"
+@@ -1520,3 +1521,21 @@ TEST_CASE("Display menu edits display.txt and keeps its comments and line ends")
+         "A=1\r\nPRIORITY=sharp\r\n");
+   CHECK(display_file_set("", "RESOLUTION", "auto") == "RESOLUTION=auto\n");
+ }
++
++TEST_CASE("Volume reads amixer's level and mute state") {
++  const std::string hda =
++      "Simple mixer control 'Master',0\n"
++      "  Capabilities: pvolume pvolume-joined pswitch pswitch-joined\n"
++      "  Playback channels: Mono\n"
++      "  Limits: Playback 0 - 87\n"
++      "  Mono: Playback 64 [72%] [-17.25dB] [on]\n";
++  CHECK(volume_parse_percent(hda) == 72);
++  CHECK_FALSE(volume_parse_muted(hda));
++  const std::string ac97 =
++      "  Front Left: Playback 0 [0%] [-46.50dB] [off]\n"
++      "  Front Right: Playback 0 [0%] [-46.50dB] [off]\n";
++  CHECK(volume_parse_percent(ac97) == 0);
++  CHECK(volume_parse_muted(ac97));
++  CHECK(volume_parse_percent("amixer: Unable to find simple control") == -1);
++  CHECK(volume_parse_percent("[100%]") == 100);
++}
+-- 
+2.43.0
+

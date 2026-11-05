@@ -62,6 +62,7 @@ README.TXT        키 안내
 | F5 | 5.25" 드라이브 맞바꾸기 |
 | Ctrl+F2 / Ctrl+F10 | 재부팅 / Ctrl+Reset |
 | F7 / F8 / F9 | 디버거 / 스크린샷 / 화면 모드 |
+| Alt+F7 / Alt+F8 | 볼륨 내리기 / 올리기 (5%씩, 화면에 표시, `linapple.conf`의 `Master Volume`에 저장). 노트북의 볼륨·음소거 키도 같은 일을 함. ThinkPad는 `thinkpad_acpi`로 볼륨 버튼을 받음 |
 | Alt+F9 | 화면 설정 메뉴 (해상도, 확대 방식, 모니터 모양; 해상도를 바꾸면 재부팅 여부를 물음) |
 | Alt+F6 | 모니터 모양 바꾸기 (auto/16:9/16:10/5:4/3:2/4:3, 저장됨) |
 | ScrollLock | 최고 속도 |
@@ -146,7 +147,7 @@ Ubuntu 24.04 x86_64에서 root로 `./build.sh`를 실행하면 `out/apple2pc.img
 ```
 kernel/linux-fragment.config   커널 설정 (i386_defconfig 위에 덮어씀)
 busybox/busybox.config         busybox 설정 (정적 빌드)
-linapple/*.patch               LinApple 패치 7개
+linapple/*.patch               LinApple 패치 8개
 wpa/wpa_supplicant.config      wpa_supplicant 빌드 설정
 overlay/                       inittab, 부팅·네트워크 스크립트, 기본 설정
 grub.cfg, genimage.cfg         부트로더, 디스크 구성
@@ -161,5 +162,7 @@ LinApple 패치:
 5. SuperSprite 카드
 6. 전체화면에서 애플 화면 모양 유지(기본 4:3, `Full Screen Aspect`), 모니터 모양 보정(`Monitor Aspect`, Alt+F6), 확대 방식(`Scale Mode` aspect/sharp), 전체화면으로 시작할 때도 적용
 7. 화면 설정 메뉴(Alt+F9): display.txt와 설정을 고치고 필요하면 재부팅 요청
+8. 볼륨 키(Alt+F7/Alt+F8, 키보드의 볼륨·음소거 키): amixer로 사운드 카드 볼륨, 화면 표시, 저장
+9. 빠른 소프트웨어 확대: 열 위치 표 + 원본 줄을 한 번만 확대해 복사 (1024x768에서 CPU 약 1/4, 그림은 같음)
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

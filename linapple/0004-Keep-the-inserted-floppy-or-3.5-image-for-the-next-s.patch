@@ -1,7 +1,7 @@
-From b944476c01dafdc2d2b3f7610c9c59c5daa49319 Mon Sep 17 00:00:00 2001
+From fb19bb0db9a845ac7bb38b5ccddffc6f34edc3a5 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Tue, 20 Oct 2026 07:28:01 +0900
-Subject: [PATCH 4/4] Keep the inserted floppy or 3.5" image for the next start
+Subject: [PATCH 4/9] Keep the inserted floppy or 3.5" image for the next start
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01WsL4gZNfD2isH3GzbRC1Jq
@@ -10,7 +10,7 @@ Claude-Session: https://claude.ai/code/session_01WsL4gZNfD2isH3GzbRC1Jq
  1 file changed, 2 insertions(+)
 
 diff --git a/src/frontends/common/sdl/DiskSelect.cpp b/src/frontends/common/sdl/DiskSelect.cpp
-index 0ab480f..50308e2 100644
+index 0ab480fe..50308e2c 100644
 --- a/src/frontends/common/sdl/DiskSelect.cpp
 +++ b/src/frontends/common/sdl/DiskSelect.cpp
 @@ -151,6 +151,8 @@ auto disk_select(int drive) -> void {

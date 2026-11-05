@@ -1,7 +1,7 @@
-From 496812eaba917e4113b7a7b3940a101f0e165525 Mon Sep 17 00:00:00 2001
+From dc75c0e2d7c7e9a5eb4335e38989863a6764b657 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Tue, 20 Oct 2026 07:18:21 +0900
-Subject: [PATCH 3/4] SmartPort and FujiNet cards; full-screen fixes; safer
+Subject: [PATCH 3/9] SmartPort and FujiNet cards; full-screen fixes; safer
  slot saves
 
 New cards, sharing one firmware and one 6502-facing core
@@ -60,7 +60,7 @@ Claude-Session: https://claude.ai/code/session_01WsL4gZNfD2isH3GzbRC1Jq
  create mode 100644 src/apple2/peripherals/smartport/firmware/smartport.s
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b14dea6..5cc3579 100644
+index b14dea61..5cc35790 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -668,6 +668,7 @@ add_peripheral(super_serial "Super Serial Card" "src/apple2/peripherals/super_se
@@ -73,7 +73,7 @@ index b14dea6..5cc3579 100644
  # The chips have no target of their own: the core list and the Mockingboard
 diff --git a/src/apple2/peripherals/smartport/FujiNetLink.cpp b/src/apple2/peripherals/smartport/FujiNetLink.cpp
 new file mode 100644
-index 0000000..315d7cf
+index 00000000..315d7cfd
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/FujiNetLink.cpp
 @@ -0,0 +1,420 @@
@@ -499,7 +499,7 @@ index 0000000..315d7cf
 +}  // namespace fujinet
 diff --git a/src/apple2/peripherals/smartport/FujiNetLink.h b/src/apple2/peripherals/smartport/FujiNetLink.h
 new file mode 100644
-index 0000000..86c977f
+index 00000000..86c977f4
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/FujiNetLink.h
 @@ -0,0 +1,84 @@
@@ -589,7 +589,7 @@ index 0000000..86c977f
 +}  // namespace fujinet
 diff --git a/src/apple2/peripherals/smartport/LocalDisks.cpp b/src/apple2/peripherals/smartport/LocalDisks.cpp
 new file mode 100644
-index 0000000..5e9e853
+index 00000000..5e9e853d
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/LocalDisks.cpp
 @@ -0,0 +1,366 @@
@@ -961,7 +961,7 @@ index 0000000..5e9e853
 +}  // namespace smartport
 diff --git a/src/apple2/peripherals/smartport/LocalDisks.h b/src/apple2/peripherals/smartport/LocalDisks.h
 new file mode 100644
-index 0000000..00b3865
+index 00000000..00b3865b
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/LocalDisks.h
 @@ -0,0 +1,81 @@
@@ -1048,7 +1048,7 @@ index 0000000..00b3865
 +}  // namespace smartport
 diff --git a/src/apple2/peripherals/smartport/SmartPortCard.cpp b/src/apple2/peripherals/smartport/SmartPortCard.cpp
 new file mode 100644
-index 0000000..bb5f325
+index 00000000..bb5f3256
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/SmartPortCard.cpp
 @@ -0,0 +1,764 @@
@@ -1818,7 +1818,7 @@ index 0000000..bb5f325
 +PERIPHERAL_REGISTER(fujinet_peripheral)
 diff --git a/src/apple2/peripherals/smartport/SmartPortCard.h b/src/apple2/peripherals/smartport/SmartPortCard.h
 new file mode 100644
-index 0000000..e56714f
+index 00000000..e56714fd
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/SmartPortCard.h
 @@ -0,0 +1,15 @@
@@ -1839,7 +1839,7 @@ index 0000000..e56714f
 +#endif
 diff --git a/src/apple2/peripherals/smartport/SmartPortRom.h b/src/apple2/peripherals/smartport/SmartPortRom.h
 new file mode 100644
-index 0000000..abef610
+index 00000000..abef6106
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/SmartPortRom.h
 @@ -0,0 +1,135 @@
@@ -1980,7 +1980,7 @@ index 0000000..abef610
 +};
 diff --git a/src/apple2/peripherals/smartport/SmartPortTypes.h b/src/apple2/peripherals/smartport/SmartPortTypes.h
 new file mode 100644
-index 0000000..1d90e91
+index 00000000..1d90e915
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/SmartPortTypes.h
 @@ -0,0 +1,71 @@
@@ -2057,7 +2057,7 @@ index 0000000..1d90e91
 +}  // namespace smartport
 diff --git a/src/apple2/peripherals/smartport/firmware/gen_rom.sh b/src/apple2/peripherals/smartport/firmware/gen_rom.sh
 new file mode 100755
-index 0000000..afe408a
+index 00000000..afe408af
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/firmware/gen_rom.sh
 @@ -0,0 +1,28 @@
@@ -2091,7 +2091,7 @@ index 0000000..afe408a
 +echo "wrote $out"
 diff --git a/src/apple2/peripherals/smartport/firmware/smartport.s b/src/apple2/peripherals/smartport/firmware/smartport.s
 new file mode 100644
-index 0000000..ebb67b8
+index 00000000..ebb67b8b
 --- /dev/null
 +++ b/src/apple2/peripherals/smartport/firmware/smartport.s
 @@ -0,0 +1,183 @@
@@ -2279,7 +2279,7 @@ index 0000000..ebb67b8
 +        .byte   $F7             ; ProDOS status bits
 +        .byte   <driver         ; ProDOS entry point
 diff --git a/src/frontends/common/AppController.cpp b/src/frontends/common/AppController.cpp
-index fb9b580..74335dc 100644
+index fb9b580a..74335dc0 100644
 --- a/src/frontends/common/AppController.cpp
 +++ b/src/frontends/common/AppController.cpp
 @@ -207,6 +207,22 @@ static auto apply_screen_factor() -> void {
@@ -2323,7 +2323,7 @@ index fb9b580..74335dc 100644
      if (from_args < 0) {
        Logger::warning(
 diff --git a/src/frontends/common/HarddiskFrontend.cpp b/src/frontends/common/HarddiskFrontend.cpp
-index bd12bfd..447e1c3 100644
+index bd12bfda..447e1c36 100644
 --- a/src/frontends/common/HarddiskFrontend.cpp
 +++ b/src/frontends/common/HarddiskFrontend.cpp
 @@ -17,6 +17,9 @@
@@ -2349,7 +2349,7 @@ index bd12bfd..447e1c3 100644
  
  auto harddisk_frontend_slot() -> int { return card_slot; }
 diff --git a/src/frontends/common/sdl/DiskChoose_Decl.h b/src/frontends/common/sdl/DiskChoose_Decl.h
-index 4f6103d..724ede5 100644
+index 4f6103dc..724ede5c 100644
 --- a/src/frontends/common/sdl/DiskChoose_Decl.h
 +++ b/src/frontends/common/sdl/DiskChoose_Decl.h
 @@ -18,6 +18,8 @@ auto choose_image_dialog(int sx, int sy, const std::string& dir, int slot,
@@ -2362,7 +2362,7 @@ index 4f6103d..724ede5 100644
  auto harddisk_ui_select(int drive) -> void;
  auto harddisk_ui_ftp_select(int drive) -> void;
 diff --git a/src/frontends/common/sdl/DiskSelect.cpp b/src/frontends/common/sdl/DiskSelect.cpp
-index 494a285..0ab480f 100644
+index 494a2859..0ab480fe 100644
 --- a/src/frontends/common/sdl/DiskSelect.cpp
 +++ b/src/frontends/common/sdl/DiskSelect.cpp
 @@ -1,11 +1,15 @@
@@ -2475,7 +2475,7 @@ index 494a285..0ab480f 100644
  
    back_idx = file_index;
 diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
-index b1ae928..ae562af 100644
+index b1ae928c..ae562afe 100644
 --- a/src/frontends/sdl1/Frame.cpp
 +++ b/src/frontends/sdl1/Frame.cpp
 @@ -133,6 +133,7 @@ auto handle_btn_drive(int drive_idx, int mod) -> void {
@@ -2500,7 +2500,7 @@ index b1ae928..ae562af 100644
                       (system_state.screen_height != SCREEN_HEIGHT);
    printf("Screen size is %ux%u\n", system_state.screen_width,
 diff --git a/src/frontends/sdl1/Frame.h b/src/frontends/sdl1/Frame.h
-index f8e1e33..2004e6f 100644
+index f8e1e33e..2004e6fe 100644
 --- a/src/frontends/sdl1/Frame.h
 +++ b/src/frontends/sdl1/Frame.h
 @@ -68,3 +68,4 @@ auto harddisk_ui_ftp_select(int drive) -> void;
@@ -2509,7 +2509,7 @@ index f8e1e33..2004e6f 100644
  auto disk_select(int drive) -> void;
 +auto smartport_eject_35(int drive) -> void;
 diff --git a/src/frontends/sdl1/SnapshotGallery.cpp b/src/frontends/sdl1/SnapshotGallery.cpp
-index 5b077f8..ebf4bcf 100644
+index 5b077f8d..ebf4bcf5 100644
 --- a/src/frontends/sdl1/SnapshotGallery.cpp
 +++ b/src/frontends/sdl1/SnapshotGallery.cpp
 @@ -269,6 +269,7 @@ auto draw_gallery(SDL_Surface* scr, const Layout& l,

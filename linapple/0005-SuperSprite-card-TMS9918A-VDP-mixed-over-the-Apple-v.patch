@@ -1,8 +1,8 @@
-From 833b03819a4376752faef25009d9de8b26b329bf Mon Sep 17 00:00:00 2001
+From f23c2356c70a825c177aa3bed6cb9215df335c0b Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Sat, 24 Oct 2026 10:32:29 +0900
-Subject: [PATCH] SuperSprite card: TMS9918A VDP mixed over the Apple video,
- AY-3-8912
+Subject: [PATCH 5/9] SuperSprite card: TMS9918A VDP mixed over the Apple
+ video, AY-3-8912
 
 A Synetix SuperSprite for any slot (its software expects slot 7):
 'Slot 7 = SuperSprite'. Register map from the owner's manual as MAME's
@@ -43,7 +43,7 @@ Claude-Session: https://claude.ai/code/session_01D6xDKywCB3wTsvh9urrhRo
  create mode 100644 tests/test_supersprite.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 5cc3579..12d2e41 100644
+index 5cc35790..12d2e41e 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -669,7 +669,9 @@ add_peripheral(joystick "game I/O port (paddles, buttons and the //e Apple-key s
@@ -67,7 +67,7 @@ index 5cc3579..12d2e41 100644
          set_source_files_properties(tests/test_joystick_abi_c.c PROPERTIES COMPILE_OPTIONS "-std=c99;-pedantic")
          add_linapple_test(joystick-peripheral "tests/test_main.cpp;tests/HeadlessHarness.cpp;tests/test_joystick_peripheral.cpp;tests/test_joystick_abi_c.c")
 diff --git a/src/apple2/Video.cpp b/src/apple2/Video.cpp
-index 4fedb69..66b73e3 100644
+index 4fedb69f..66b73e34 100644
 --- a/src/apple2/Video.cpp
 +++ b/src/apple2/Video.cpp
 @@ -44,6 +44,15 @@ static bool language_rocker_switch = false;
@@ -99,7 +99,7 @@ index 4fedb69..66b73e3 100644
    if (status_cycle > 0 && show_leds && status_surface) {
      VideoRect ss = {0, 0, STATUS_PANEL_W, STATUS_PANEL_H};
 diff --git a/src/apple2/Video.h b/src/apple2/Video.h
-index 219f1e4..1be8e33 100644
+index 219f1e46..1be8e33c 100644
 --- a/src/apple2/Video.h
 +++ b/src/apple2/Video.h
 @@ -168,6 +168,12 @@ extern VideoSurface* device_bitmap;
@@ -117,7 +117,7 @@ index 219f1e4..1be8e33 100644
    return frame_ready.load();
 diff --git a/src/apple2/chips/TMS9918A.cpp b/src/apple2/chips/TMS9918A.cpp
 new file mode 100644
-index 0000000..59da8f4
+index 00000000..59da8f4c
 --- /dev/null
 +++ b/src/apple2/chips/TMS9918A.cpp
 @@ -0,0 +1,318 @@
@@ -441,7 +441,7 @@ index 0000000..59da8f4
 +}
 diff --git a/src/apple2/chips/TMS9918A.h b/src/apple2/chips/TMS9918A.h
 new file mode 100644
-index 0000000..949827e
+index 00000000..949827ef
 --- /dev/null
 +++ b/src/apple2/chips/TMS9918A.h
 @@ -0,0 +1,61 @@
@@ -507,7 +507,7 @@ index 0000000..949827e
 +// The commonly used RGB rendering of the 15 opaque colours, 0x00RRGGBB.
 +auto tms9918a_palette_rgb(uint8_t color) noexcept -> uint32_t;
 diff --git a/src/apple2/peripherals/Peripheral.cpp b/src/apple2/peripherals/Peripheral.cpp
-index 6e73942..b55ff07 100644
+index 6e73942b..b55ff073 100644
 --- a/src/apple2/peripherals/Peripheral.cpp
 +++ b/src/apple2/peripherals/Peripheral.cpp
 @@ -19,6 +19,7 @@
@@ -539,7 +539,7 @@ index 6e73942..b55ff07 100644
  
  // --- Command Queue ---
 diff --git a/src/apple2/peripherals/Peripheral.h b/src/apple2/peripherals/Peripheral.h
-index 44eefe6..c9cdf98 100644
+index 44eefe6c..c9cdf986 100644
 --- a/src/apple2/peripherals/Peripheral.h
 +++ b/src/apple2/peripherals/Peripheral.h
 @@ -34,6 +34,14 @@ typedef PeripheralIOHandler PeripheralIoHandler;
@@ -570,7 +570,7 @@ index 44eefe6..c9cdf98 100644
  // Forward declaration
 diff --git a/src/apple2/peripherals/supersprite/SuperSprite.cpp b/src/apple2/peripherals/supersprite/SuperSprite.cpp
 new file mode 100644
-index 0000000..23b1e5c
+index 00000000..23b1e5c6
 --- /dev/null
 +++ b/src/apple2/peripherals/supersprite/SuperSprite.cpp
 @@ -0,0 +1,587 @@
@@ -1163,7 +1163,7 @@ index 0000000..23b1e5c
 +PERIPHERAL_REGISTER(supersprite_peripheral)
 diff --git a/src/apple2/peripherals/supersprite/SuperSprite.h b/src/apple2/peripherals/supersprite/SuperSprite.h
 new file mode 100644
-index 0000000..4912c79
+index 00000000..4912c794
 --- /dev/null
 +++ b/src/apple2/peripherals/supersprite/SuperSprite.h
 @@ -0,0 +1,14 @@
@@ -1182,7 +1182,7 @@ index 0000000..4912c79
 +}
 +#endif
 diff --git a/tests/test_peripheral_abi.cpp b/tests/test_peripheral_abi.cpp
-index f635d51..6bdbabc 100644
+index f635d51b..6bdbabc6 100644
 --- a/tests/test_peripheral_abi.cpp
 +++ b/tests/test_peripheral_abi.cpp
 @@ -265,8 +265,11 @@ static_assert(offsetof(HostInterface, GetMachine) == 30 * host_member_size,
@@ -1211,7 +1211,7 @@ index f635d51..6bdbabc 100644
  
    peripheral_manager_init();
 diff --git a/tests/test_peripheral_abi_c.c b/tests/test_peripheral_abi_c.c
-index d983f10..628c48e 100644
+index d983f103..628c48ef 100644
 --- a/tests/test_peripheral_abi_c.c
 +++ b/tests/test_peripheral_abi_c.c
 @@ -146,8 +146,13 @@ typedef char
@@ -1232,7 +1232,7 @@ index d983f10..628c48e 100644
                                        peripheral_machine_apple2_plus == 1 &&
 diff --git a/tests/test_supersprite.cpp b/tests/test_supersprite.cpp
 new file mode 100644
-index 0000000..ff33c2a
+index 00000000..ff33c2ac
 --- /dev/null
 +++ b/tests/test_supersprite.cpp
 @@ -0,0 +1,493 @@

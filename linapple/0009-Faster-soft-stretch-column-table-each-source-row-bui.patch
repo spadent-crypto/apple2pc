@@ -1,0 +1,425 @@
+From 6a00516b70e8a72c4386d8b2f27b1a471bf12c67 Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Fri, 6 Nov 2026 07:21:47 +0900
+Subject: [PATCH 9/9] Faster soft stretch: column table, each source row built
+ once
+
+The per-pixel 64-bit division was a __divdi3 call on 32-bit x86. Columns
+now come from a cached table, and each distinct source row is scaled once
+into a RAM row and copied to every screen row that shows it, so the
+framebuffer is only written. Output is pixel-identical (new test).
+---
+ src/frontends/common/VideoStretch.cpp | 239 ++++++++++++++++----------
+ tests/test_video_stretch.cpp          |  72 ++++++++
+ 2 files changed, 217 insertions(+), 94 deletions(-)
+
+diff --git a/src/frontends/common/VideoStretch.cpp b/src/frontends/common/VideoStretch.cpp
+index 316a0aab..4f2a660e 100644
+--- a/src/frontends/common/VideoStretch.cpp
++++ b/src/frontends/common/VideoStretch.cpp
+@@ -10,6 +10,28 @@
+ 
+ #include "frontends/common/VideoSurface.h"
+ 
++#include <vector>
++
++// Which source column each destination column takes, for one width pair.
++// Worked out once with division and reused for every row and frame: on a
++// 32-bit x86 a 64-bit division is a slow library call, and doing one per
++// pixel used to cost most of the picture's drawing time.
++static auto column_map(int src_w, int dst_w) -> const int* {
++  thread_local std::vector<int> map;
++  thread_local int map_src_w = -1;
++  thread_local int map_dst_w = -1;
++  if (src_w != map_src_w || dst_w != map_dst_w) {
++    map.resize(static_cast<size_t>(dst_w));
++    for (int i = 0; i < dst_w; ++i) {
++      int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
++      map[static_cast<size_t>(i)] = src_x >= src_w ? src_w - 1 : src_x;
++    }
++    map_src_w = src_w;
++    map_dst_w = dst_w;
++  }
++  return map.data();
++}
++
+ template <typename T>
+ static auto copy_row(const T* src, int src_w, T* dst, int dst_x, int dst_w,
+                      int max_w) -> void {
+@@ -28,15 +50,12 @@ static auto copy_row(const T* src, int src_w, T* dst, int dst_x, int dst_w,
+     }
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      dst[cur_x] = src[src_x];
+-    }
++  const int* map = column_map(src_w, dst_w);
++  const int first = std::max(0, -dst_x);
++  const int last = std::min(dst_w, max_w - dst_x);
++  T* out = dst + dst_x;
++  for (int i = first; i < last; ++i) {
++    out[i] = src[map[i]];
+   }
+ }
+ 
+@@ -58,15 +77,12 @@ static auto copy_row_or(const T* src, int src_w, T* dst, int dst_x, int dst_w,
+     }
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      dst[cur_x] |= src[src_x];
+-    }
++  const int* map = column_map(src_w, dst_w);
++  const int first = std::max(0, -dst_x);
++  const int last = std::min(dst_w, max_w - dst_x);
++  T* out = dst + dst_x;
++  for (int i = first; i < last; ++i) {
++    out[i] |= src[map[i]];
+   }
+ }
+ 
+@@ -132,15 +148,11 @@ static auto copy_row1to4(const uint8_t* src, int src_w, uint32_t* dst,
+     }
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      dst[cur_x] = palette_lut[src[src_x]];
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    dst[cur_x] = palette_lut[src[src_x]];
+   }
+ }
+ 
+@@ -163,15 +175,11 @@ static auto copy_row_or1to4(const uint8_t* src, int src_w, uint32_t* dst,
+     }
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      dst[cur_x] |= palette_lut[src[src_x]];
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    dst[cur_x] |= palette_lut[src[src_x]];
+   }
+ }
+ 
+@@ -183,19 +191,15 @@ static auto copy_row3(const uint8_t* src, int src_w, uint8_t* dst, int dst_x,
+   if (dst_x >= max_w || dst_x + dst_w <= 0) {
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      const auto dst_idx = static_cast<size_t>(cur_x) * 3U;
+-      const auto src_idx = static_cast<size_t>(src_x) * 3U;
+-      dst[dst_idx] = src[src_idx];
+-      dst[dst_idx + 1] = src[src_idx + 1];
+-      dst[dst_idx + 2] = src[src_idx + 2];
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    const auto dst_idx = static_cast<size_t>(cur_x) * 3U;
++    const auto src_idx = static_cast<size_t>(src_x) * 3U;
++    dst[dst_idx] = src[src_idx];
++    dst[dst_idx + 1] = src[src_idx + 1];
++    dst[dst_idx + 2] = src[src_idx + 2];
+   }
+ }
+ 
+@@ -207,19 +211,15 @@ static auto copy_row3to4(const uint8_t* src, int src_w, uint32_t* dst,
+   if (dst_x >= max_w || dst_x + dst_w <= 0) {
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      const auto src_idx = static_cast<size_t>(src_x) * 3U;
+-      uint32_t r = src[src_idx];
+-      uint32_t g = src[src_idx + 1];
+-      uint32_t b = src[src_idx + 2];
+-      dst[cur_x] = (r << 16) | (g << 8) | b;
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    const auto src_idx = static_cast<size_t>(src_x) * 3U;
++    uint32_t r = src[src_idx];
++    uint32_t g = src[src_idx + 1];
++    uint32_t b = src[src_idx + 2];
++    dst[cur_x] = (r << 16) | (g << 8) | b;
+   }
+ }
+ 
+@@ -231,19 +231,15 @@ static auto copy_row_or3to4(const uint8_t* src, int src_w, uint32_t* dst,
+   if (dst_x >= max_w || dst_x + dst_w <= 0) {
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      const auto src_idx = static_cast<size_t>(src_x) * 3U;
+-      uint32_t r = src[src_idx];
+-      uint32_t g = src[src_idx + 1];
+-      uint32_t b = src[src_idx + 2];
+-      dst[cur_x] |= (r << 16) | (g << 8) | b;
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    const auto src_idx = static_cast<size_t>(src_x) * 3U;
++    uint32_t r = src[src_idx];
++    uint32_t g = src[src_idx + 1];
++    uint32_t b = src[src_idx + 2];
++    dst[cur_x] |= (r << 16) | (g << 8) | b;
+   }
+ }
+ 
+@@ -256,15 +252,11 @@ static auto copy8mono(const uint8_t* src, int src_w, uint8_t* dst, int dst_x,
+   if (dst_x >= max_w || dst_x + dst_w <= 0) {
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      dst[cur_x] = (src[src_x] != 0) ? fgbrush : bgbrush;
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    dst[cur_x] = (src[src_x] != 0) ? fgbrush : bgbrush;
+   }
+ }
+ 
+@@ -277,15 +269,11 @@ static auto copy8mono4(const uint8_t* src, int src_w, uint32_t* dst, int dst_x,
+   if (dst_x >= max_w || dst_x + dst_w <= 0) {
+     return;
+   }
+-  for (int i = 0; i < dst_w; ++i) {
+-    int src_x = static_cast<int>((static_cast<int64_t>(i) * src_w) / dst_w);
+-    if (src_x >= src_w) {
+-      src_x = src_w - 1;
+-    }
+-    int cur_x = dst_x + i;
+-    if (cur_x >= 0 && cur_x < max_w) {
+-      dst[cur_x] = (src[src_x] != 0) ? fgbrush : bgbrush;
+-    }
++  const int* map = column_map(src_w, dst_w);
++  for (int i = std::max(0, -dst_x); i < std::min(dst_w, max_w - dst_x); ++i) {
++    const int src_x = map[i];
++    const int cur_x = dst_x + i;
++    dst[cur_x] = (src[src_x] != 0) ? fgbrush : bgbrush;
+   }
+ }
+ 
+@@ -366,9 +354,72 @@ static auto video_soft_stretch_impl(VideoSurfaceView src,
+   return 0;
+ }
+ 
++// Like video_soft_stretch_impl, but a source row shown on several screen rows
++// (a picture scaled 2x or more in height) is stretched once into a row in
++// ordinary memory and copied from there, so the screen is only written,
++// never read back (reading video memory is very slow).
++template <typename RowOp>
++static auto video_soft_stretch_rows_once(VideoSurfaceView src,
++                                         const VideoRect* srcrect,
++                                         VideoSurfaceView dst,
++                                         const VideoRect* dstrect,
++                                         RowOp row_op) -> int {
++  if (!src.pixels || !dst.pixels) {
++    return -1;
++  }
++  VideoRect full_src = srcrect ? *srcrect : VideoRect{0, 0, src.w, src.h};
++  VideoRect full_dst = dstrect ? *dstrect : VideoRect{0, 0, dst.w, dst.h};
++  if (full_dst.h <= 0 || full_src.h <= 0 || full_dst.w <= 0 ||
++      full_src.w <= 0) {
++    return -1;
++  }
++  if (!clip_source_rect(src, &full_src)) {
++    return 0;
++  }
++
++  const int sbpp = src.bpp;
++  const int dbpp = dst.bpp;
++  const int span_first = std::max<int>(0, full_dst.x);
++  const int span_last = std::min<int>(dst.w, full_dst.x + full_dst.w);
++  if (span_last <= span_first) {
++    return 0;
++  }
++  const size_t span_offset = static_cast<size_t>(span_first) * dbpp;
++  const size_t span_bytes = static_cast<size_t>(span_last - span_first) * dbpp;
++
++  thread_local std::vector<uint8_t> row;
++  row.resize(static_cast<size_t>(dst.w) * dbpp);
++
++  int built_src_row = -1;
++  for (int row_idx = 0; row_idx < full_dst.h; ++row_idx) {
++    const int cur_dst_row = full_dst.y + row_idx;
++    if (cur_dst_row < 0 || cur_dst_row >= dst.h) {
++      continue;
++    }
++    const int cur_src_row =
++        full_src.y +
++        static_cast<int>((static_cast<int64_t>(row_idx) * full_src.h) /
++                         full_dst.h);
++    if (cur_src_row < 0 || cur_src_row >= src.h) {
++      continue;
++    }
++    if (cur_src_row != built_src_row) {
++      uint8_t* srcp = src.pixels +
++                      (static_cast<ptrdiff_t>(cur_src_row) * src.pitch) +
++                      (static_cast<ptrdiff_t>(full_src.x) * sbpp);
++      row_op(srcp, full_src.w, row.data(), full_dst.x, full_dst.w, dst.w);
++      built_src_row = cur_src_row;
++    }
++    std::memcpy(dst.pixels + (static_cast<ptrdiff_t>(cur_dst_row) * dst.pitch) +
++                    span_offset,
++                row.data() + span_offset, span_bytes);
++  }
++  return 0;
++}
++
+ auto video_soft_stretch(VideoSurfaceView src, const VideoRect* srcrect,
+                         VideoSurfaceView dst, const VideoRect* dstrect) -> int {
+-  return video_soft_stretch_impl(
++  return video_soft_stretch_rows_once(
+       src, srcrect, dst, dstrect,
+       [&](uint8_t* srcp, int src_w, uint8_t* dst_row_base, int dst_x, int dst_w,
+           int max_w) -> void {
+diff --git a/tests/test_video_stretch.cpp b/tests/test_video_stretch.cpp
+index 72125807..5c2aa4d4 100644
+--- a/tests/test_video_stretch.cpp
++++ b/tests/test_video_stretch.cpp
+@@ -1,4 +1,5 @@
+ // SPDX-License-Identifier: GPL-2.0-only
++#include <algorithm>
+ #include <cstdint>
+ #include <memory>
+ 
+@@ -219,3 +220,74 @@ TEST_CASE("Video: Frame ready state transitions") {
+   video_clear_frame_ready();
+   CHECK(video_is_frame_ready() == false);
+ }
++
++// The column table and the build-each-row-once path must give exactly what
++// the old per-pixel formula gave, clipped edges included.
++TEST_CASE("Soft stretch matches the per-pixel formula, 16 and 32 bit") {
++  struct Case {
++    int src_w, src_h, dst_w, dst_h;
++    VideoRect dst_rect;
++  };
++  const Case cases[] = {
++      {560, 384, 1024, 768, {0, 0, 1024, 768}},   // 4:3 aspect on 1024x768
++      {560, 384, 1024, 768, {0, 0, 1120, 768}},   // pixel aspect, wider
++      {560, 384, 800, 600, {0, 0, 800, 600}},     // aspect on 800x600
++      {560, 384, 800, 600, {144, 108, 512, 384}}, // sharp on 800x600
++      {560, 384, 1280, 800, {107, 0, 1066, 800}}, // pillarbox
++      {560, 384, 300, 200, {-20, -10, 340, 230}}, // clipped on every side
++  };
++  for (int bpp : {2, 4}) {
++    for (const Case& c : cases) {
++      UniqueSurface src = make_surface(c.src_w, c.src_h, bpp);
++      UniqueSurface dst = make_surface(c.dst_w, c.dst_h, bpp);
++      REQUIRE(src != nullptr);
++      REQUIRE(dst != nullptr);
++      for (int y = 0; y < c.src_h; ++y) {
++        uint8_t* row = src->pixels + (static_cast<std::ptrdiff_t>(y) * src->pitch);
++        for (int x = 0; x < c.src_w; ++x) {
++          const uint32_t v = static_cast<uint32_t>((y * 7919) ^ (x * 104729));
++          if (bpp == 2) {
++            reinterpret_cast<uint16_t*>(row)[x] = static_cast<uint16_t>(v);
++          } else {
++            reinterpret_cast<uint32_t*>(row)[x] = v;
++          }
++        }
++      }
++      VideoRect dr = c.dst_rect;
++      REQUIRE(video_soft_stretch(src.get(), nullptr, dst.get(), &dr) == 0);
++
++      int bad = 0;
++      for (int ry = 0; ry < c.dst_rect.h && bad < 5; ++ry) {
++        const int y = c.dst_rect.y + ry;
++        if (y < 0 || y >= c.dst_h) {
++          continue;
++        }
++        const int sy = static_cast<int>((static_cast<int64_t>(ry) * c.src_h) /
++                                        c.dst_rect.h);
++        for (int rx = 0; rx < c.dst_rect.w && bad < 5; ++rx) {
++          const int x = c.dst_rect.x + rx;
++          if (x < 0 || x >= c.dst_w) {
++            continue;
++          }
++          int sx = static_cast<int>((static_cast<int64_t>(rx) * c.src_w) /
++                                    c.dst_rect.w);
++          sx = std::min(sx, c.src_w - 1);
++          const uint8_t* srow =
++              src->pixels + (static_cast<std::ptrdiff_t>(sy) * src->pitch);
++          const uint8_t* drow =
++              dst->pixels + (static_cast<std::ptrdiff_t>(y) * dst->pitch);
++          const uint32_t want =
++              bpp == 2 ? reinterpret_cast<const uint16_t*>(srow)[sx]
++                       : reinterpret_cast<const uint32_t*>(srow)[sx];
++          const uint32_t got =
++              bpp == 2 ? reinterpret_cast<const uint16_t*>(drow)[x]
++                       : reinterpret_cast<const uint32_t*>(drow)[x];
++          if (want != got) {
++            ++bad;
++          }
++        }
++      }
++      CHECK(bad == 0);
++    }
++  }
++}
+-- 
+2.43.0
+

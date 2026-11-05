@@ -1,7 +1,7 @@
-From 57c516ba10c0c35f02b4b971245bab162b5c4781 Mon Sep 17 00:00:00 2001
+From 304c13f7d1753408e0b3b225e7eb37a34e10b766 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Mon, 19 Oct 2026 09:59:10 +0900
-Subject: [PATCH 2/4] snapshot: keep the .aws layout the same on 32-bit x86
+Subject: [PATCH 2/9] snapshot: keep the .aws layout the same on 32-bit x86
 
 On i386 a uint64_t or double member is only 4-byte aligned inside a
 struct, so SsCpu6502, SsIoJoystick and SsIoSpeaker shrank and the
@@ -16,7 +16,7 @@ Claude-Session: https://claude.ai/code/session_01WsL4gZNfD2isH3GzbRC1Jq
  2 files changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/src/apple2/SnapshotTypes.h b/src/apple2/SnapshotTypes.h
-index b8945d5..730e7a4 100644
+index b8945d54..730e7a41 100644
 --- a/src/apple2/SnapshotTypes.h
 +++ b/src/apple2/SnapshotTypes.h
 @@ -41,7 +41,7 @@ struct SsCpu6502 {
@@ -38,7 +38,7 @@ index b8945d5..730e7a4 100644
  
  struct SsIoVideo {
 diff --git a/src/apple2/peripherals/speaker/Speaker.h b/src/apple2/peripherals/speaker/Speaker.h
-index 415e47f..af31d4e 100644
+index 415e47fd..af31d4e9 100644
 --- a/src/apple2/peripherals/speaker/Speaker.h
 +++ b/src/apple2/peripherals/speaker/Speaker.h
 @@ -7,12 +7,12 @@

@@ -76,9 +76,29 @@ done
 # LinApple, which opens the sound device when it starts.
 /usr/bin/apple2-sound
 
-# AC'97 and HD Audio chips often start muted.
-for ctl in Master PCM Front Headphone Speaker; do
-	amixer -q sset "$ctl" 85% unmute 2>/dev/null
+# ThinkPad volume and mute buttons (after the sound card, so it stays
+# the first card).
+if grep -qiE "lenovo|ibm" /sys/class/dmi/id/sys_vendor 2>/dev/null; then
+	modprobe -q thinkpad_acpi 2>/dev/null
+fi
+
+# AC'97 and HD Audio chips often start muted. The main volume is the one
+# last set with the volume keys (Master Volume in linapple.conf, 0-100);
+# the other controls go to full so that one alone sets the level.
+vol=$(tr -d '\r' <"$CONF" | sed -n 's/^Master Volume[ \t]*=[ \t]*\([0-9]*\).*/\1/p' | head -n 1)
+case $vol in
+'' | *[!0-9]*) vol=85 ;;
+esac
+[ "$vol" -gt 100 ] && vol=100
+main=""
+for ctl in Master PCM Speaker Front Headphone; do
+	amixer -q sget "$ctl" >/dev/null 2>&1 || continue
+	if [ -z "$main" ]; then
+		main=$ctl
+		amixer -q -M sset "$ctl" "$vol%" unmute 2>/dev/null
+	else
+		amixer -q sset "$ctl" 100% unmute 2>/dev/null
+	fi
 done
 
 export HOME="$DATA/.home"
