@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v1.10 2026-11-06). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0 2026-11-06). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-06 (v1.10: 볼륨 키, 화면 확대 속도 약 4배)
+마지막 갱신: 2026-11-06 (v2.0: 볼륨 키, 화면 확대 속도 약 4배)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -25,7 +25,7 @@
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
 
-### 추가 (2026-11-06, v1.10): 볼륨 조절, 화면 확대 속도
+### 추가 (2026-11-06, v2.0): 볼륨 조절, 화면 확대 속도
 - 사용자 보고: "볼륨 조절이 안 되네?" → 그동안 세션이 amixer로 85%만 고정하고 키가 없었음
 - LinApple 패치 8 (`sdl1/Volume.{h,cpp}`, SDL_Input.cpp KEYDOWN 맨 앞에서 호출): Alt+F7/Alt+F8 = 5%씩 내리기/올리기, 키보드 볼륨 다운/업/음소거 키. `amixer -M sset <첫 컨트롤>`(Master→PCM→Speaker→Front→Headphone), OSD 막대 표시, `linapple.conf`의 `Master Volume`에 저장(음소거는 0)
 - 알게 된 것: SDL1 fbcon은 리눅스 키코드를 scancode로 넘김(113 음소거, 114 다운, 115 업). 커널 키맵 때문에 음소거(113)는 SDLK_UNKNOWN이 아닌 키 심볼을 받음 → fbcon에서는 scancode만으로 판단. X11에서는 키코드+8이라(113=왼쪽 화살표) fbcon일 때만 그렇게 함
@@ -193,7 +193,7 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 ## 6. 다음에 할 일 후보
 
 - [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드 카드(`sound-cards.txt`), 무선랜 칩 모델)
-- [ ] X61s에서 v1.10 확인: 게임·소리 속도, 볼륨 버튼(thinkpad_acpi), `system-info.txt` 받아 보기
+- [ ] X61s에서 v2.0 확인: 게임·소리 속도, 볼륨 버튼(thinkpad_acpi), `system-info.txt` 받아 보기
 - [ ] LG gram 14Z970: BIOS(Boot Mode/CSM) 진입 결과 대기
 - [ ] (선택) 맥 QEMU 확인용 저해상도(640x480) 부팅 옵션
 - [ ] 실기에서 해상도별 속도 확인 (특히 auto·1280x1024 이상)
