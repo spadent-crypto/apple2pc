@@ -1,0 +1,62 @@
+#!/bin/sh
+# Write what this PC is doing to APPLE2/system-info.txt, for finding out
+# why something is slow or silent on a real machine: CPU clock and
+# governor, the screen mode, the sound card and, once LinApple has opened
+# it, the sound device's settings.
+#
+# Usage: apple2-sysinfo   (run in the background once LinApple starts)
+
+DATA=/media/apple2
+OUT=$DATA/system-info.txt
+TMP=/run/system-info.txt
+
+# Give LinApple time to open the sound device.
+sleep 12
+
+cpu_line() {
+	for c in /sys/devices/system/cpu/cpu[0-9]*; do
+		f=$c/cpufreq
+		[ -d "$f" ] || continue
+		echo "  ${c##*/}: $(($(cat "$f/scaling_cur_freq" 2>/dev/null || echo 0) / 1000)) MHz" \
+			"(min $(($(cat "$f/cpuinfo_min_freq" 2>/dev/null || echo 0) / 1000))," \
+			"max $(($(cat "$f/cpuinfo_max_freq" 2>/dev/null || echo 0) / 1000)))," \
+			"governor $(cat "$f/scaling_governor" 2>/dev/null)," \
+			"driver $(cat "$f/scaling_driver" 2>/dev/null)"
+	done
+}
+
+{
+	echo "Apple II PC - system info ($(date '+%Y-%m-%d %H:%M'))"
+	echo
+	echo "[CPU]"
+	sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | sort | uniq -c
+	sed -n 's/^cpu MHz[[:space:]]*: /  cpu MHz /p' /proc/cpuinfo
+	if ls -d /sys/devices/system/cpu/cpu0/cpufreq >/dev/null 2>&1; then
+		cpu_line
+	else
+		echo "  no CPU clock control (cpufreq) on this PC"
+	fi
+	echo "  load: $(cat /proc/loadavg)"
+	echo
+	echo "[Screen]"
+	echo "  mode: $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)" \
+		"x $(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null) bit," \
+		"driver $(cat /proc/fb 2>/dev/null | head -n 1)"
+	echo
+	echo "[Sound]"
+	cat /proc/asound/cards 2>/dev/null || echo "  no sound card"
+	for p in /proc/asound/card*/pcm*p/sub0; do
+		[ -r "$p/hw_params" ] || continue
+		echo "  ${p#/proc/asound/}:"
+		sed 's/^/    /' "$p/hw_params"
+		sed -n 's/^/    /;/state\|avail_max/p' "$p/status" 2>/dev/null
+	done
+	echo
+	echo "[Memory]"
+	sed -n 's/^\(MemTotal\|MemAvailable\):[[:space:]]*/  \1 /p' /proc/meminfo
+	echo
+	echo "[LinApple messages]"
+	tail -n 20 /run/linapple.log 2>/dev/null | sed 's/^/  /'
+} >"$TMP" 2>&1
+
+sed 's/$/\r/' "$TMP" >"$OUT" 2>/dev/null && sync

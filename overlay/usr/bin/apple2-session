@@ -66,6 +66,12 @@ if [ -r /sys/class/graphics/fb0/virtual_size ]; then
 	       -e "s/^Screen Height[ \t]*=.*/Screen Height = $H\r/" "$CONF"
 fi
 
+# Full CPU speed for the emulator (the kernel's default governor is
+# performance too; this covers a CPU whose driver starts otherwise).
+for g in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+	[ -w "$g" ] && echo performance >"$g" 2>/dev/null
+done
+
 # Sound card: PCI drivers, then ISA cards (APPLE2/sound.txt). Before
 # LinApple, which opens the sound device when it starts.
 /usr/bin/apple2-sound
@@ -87,6 +93,9 @@ export SDL_NOMOUSE=1
 export SDL_AUDIODRIVER=alsa
 
 cd "$DATA" || cd /
+# CPU clock, screen mode and sound device settings into
+# APPLE2/system-info.txt, a few seconds after LinApple starts.
+/usr/bin/apple2-sysinfo &
 /usr/bin/linapple -c "$CONF" -f >"$LOG" 2>&1
 rc=$?
 
