@@ -1,7 +1,7 @@
 From d442fc74a773282e69686b9624708302d6aea195 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 21:39:14 +0900
-Subject: [PATCH 15/16] Volume keys: fall back to the first mixer control with
+Subject: [PATCH 15/17] Volume keys: fall back to the first mixer control with
  a level
 
 A USB sound device may not call its volume Master, PCM, Speaker, Front or

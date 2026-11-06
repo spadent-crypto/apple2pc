@@ -1,7 +1,7 @@
 From f23c2356c70a825c177aa3bed6cb9215df335c0b Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Sat, 24 Oct 2026 10:32:29 +0900
-Subject: [PATCH 05/16] SuperSprite card: TMS9918A VDP mixed over the Apple
+Subject: [PATCH 05/17] SuperSprite card: TMS9918A VDP mixed over the Apple
  video, AY-3-8912
 
 A Synetix SuperSprite for any slot (its software expects slot 7):

@@ -171,5 +171,6 @@ LinApple 패치:
 14. `Mockingboard Stereo`(0~100) 설정: 모킹보드 좌우 분리 폭. Apple II PC 기본값 0(모노)
 15. 볼륨 키: 이름이 다른 볼륨 컨트롤(USB 사운드 등)이면 첫 컨트롤을 씀
 16. F12 전원 끄기 전에 확인 창("TURN THE COMPUTER OFF?")
+17. F1 도움말을 Apple II PC 키 전체로 (볼륨, 화면 설정, 디스크 빼기, 세이브 슬롯 등)
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

@@ -1,7 +1,7 @@
 From b4b61ed86e455ef5226af517b1a8c680d286a9e2 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Sat, 7 Nov 2026 05:32:44 +0900
-Subject: [PATCH 16/16] sdl1: ask before F12 turns the computer off
+Subject: [PATCH 16/17] sdl1: ask before F12 turns the computer off
 
 On the Apple II PC boot image F12 powers the PC off. F12 now shows 'Turn
 the computer off?' over the screen (Enter/Y yes, Esc/N back to the game)

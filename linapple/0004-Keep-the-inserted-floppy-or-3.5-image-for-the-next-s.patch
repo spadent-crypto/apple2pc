@@ -1,7 +1,7 @@
 From fb19bb0db9a845ac7bb38b5ccddffc6f34edc3a5 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Tue, 20 Oct 2026 07:28:01 +0900
-Subject: [PATCH 04/16] Keep the inserted floppy or 3.5" image for the next
+Subject: [PATCH 04/17] Keep the inserted floppy or 3.5" image for the next
  start
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
