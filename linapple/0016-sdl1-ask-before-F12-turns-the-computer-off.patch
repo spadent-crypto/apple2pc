@@ -1,0 +1,252 @@
+From b4b61ed86e455ef5226af517b1a8c680d286a9e2 Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Sat, 7 Nov 2026 05:32:44 +0900
+Subject: [PATCH 16/16] sdl1: ask before F12 turns the computer off
+
+On the Apple II PC boot image F12 powers the PC off. F12 now shows 'Turn
+the computer off?' over the screen (Enter/Y yes, Esc/N back to the game)
+from the emulator, the help screen, the disk chooser and the display
+menu. A quit request from the system is not asked about.
+---
+ src/frontends/sdl1/DiskChoose.cpp  |  5 +-
+ src/frontends/sdl1/DisplayMenu.cpp |  6 ++-
+ src/frontends/sdl1/Frame.cpp       | 87 +++++++++++++++++++++++++++++-
+ src/frontends/sdl1/Frame.h         |  3 ++
+ tests/test_frontend_sdl1.cpp       | 38 +++++++++++++
+ 5 files changed, 135 insertions(+), 4 deletions(-)
+
+diff --git a/src/frontends/sdl1/DiskChoose.cpp b/src/frontends/sdl1/DiskChoose.cpp
+index fe7e36e8..cadf89dd 100644
+--- a/src/frontends/sdl1/DiskChoose.cpp
++++ b/src/frontends/sdl1/DiskChoose.cpp
+@@ -62,7 +62,7 @@ auto wait_for_dismissal() -> void {
+   while (true) {
+     while (SDL_PollEvent(&event) != 0) {
+       if (event.type == SDL_KEYDOWN) {
+-        if (event.key.keysym.sym == SDLK_F12) {
++        if (event.key.keysym.sym == SDLK_F12 && frame_confirm_power_off()) {
+           system_state.mode = app_mode_exit;
+           SDL_Event qe{};
+           qe.type = SDL_QUIT;
+@@ -212,6 +212,9 @@ auto disk_choose_tick(SDL_Event* event) -> void {
+       break;
+ 
+     case SDLK_F12: {
++      if (!frame_confirm_power_off()) {
++        break;
++      }
+       disk_choose_state.active = false;
+       disk_choose_state.cancelled = true;
+       system_state.mode = app_mode_exit;
+diff --git a/src/frontends/sdl1/DisplayMenu.cpp b/src/frontends/sdl1/DisplayMenu.cpp
+index ac660206..5c2e3312 100644
+--- a/src/frontends/sdl1/DisplayMenu.cpp
++++ b/src/frontends/sdl1/DisplayMenu.cpp
+@@ -430,8 +430,10 @@ auto display_menu_open() -> void {
+         done = true;
+         break;
+       case SDLK_F12:
+-        request_quit();
+-        done = true;
++        if (frame_confirm_power_off()) {
++          request_quit();
++          done = true;
++        }
+         break;
+       default:
+         break;
+diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
+index f94e95e9..60306d93 100644
+--- a/src/frontends/sdl1/Frame.cpp
++++ b/src/frontends/sdl1/Frame.cpp
+@@ -477,6 +477,88 @@ auto remember_output(const uint32_t* output) -> void {
+ 
+ auto frame_force_full_redraw() -> void { drawn_output_valid = false; }
+ 
++// F12 turns the PC off (the boot image powers off when LinApple quits), so
++// ask first. The machine waits meanwhile; Enter or Y says yes, Esc or N no.
++auto frame_confirm_power_off() -> bool {
++  const std::lock_guard<std::recursive_mutex> lock(video_draw_mutex);
++  if (screen == nullptr) {
++    return true;
++  }
++  SDL_Surface* s = screen;
++  const int w = s->w;
++  const int h = s->h;
++  const double k = std::max(
++      1.0, std::min(static_cast<double>(w) / (40.0 * font_size_x),
++                    static_cast<double>(h) / (22.0 * font_size_y)));
++  const int line = static_cast<int>(font_size_y * k);
++
++  SdlSurfacePtr dim(SDL_CreateRGBSurface(0, w, h, s->format->BitsPerPixel,
++                                         0, 0, 0, 0));
++  if (dim != nullptr) {
++    SDL_FillRect(dim.get(), nullptr, SDL_MapRGB(dim->format, 0, 0, 0));
++    SDL_SetAlpha(dim.get(), SDL_SRCALPHA, 170);
++    SDL_BlitSurface(dim.get(), nullptr, s, nullptr);
++  }
++  const int bw = std::min(w - (2 * line),
++                          static_cast<int>(34.0 * font_size_x * k));
++  const int bh = line * 7;
++  const int bx = (w - bw) / 2;
++  const int by = (h - bh) / 2;
++  SDL_Rect panel{static_cast<Sint16>(bx), static_cast<Sint16>(by),
++                 static_cast<Uint16>(bw), static_cast<Uint16>(bh)};
++  SDL_FillRect(s, &panel, SDL_MapRGB(s->format, 24, 24, 32));
++  {
++    ScopedSurfaceLock lock_screen(s);
++    const Uint32 yellow = SDL_MapRGB(s->format, 255, 220, 0);
++    for (int i = 0; i < 3; ++i) {
++      rectangle(lock_screen.view(), bx - i, by - i, bw + (2 * i),
++                bh + (2 * i), yellow);
++    }
++    font_print_centered(w / 2, by + (line * 3 / 2), "TURN THE COMPUTER OFF?",
++                        lock_screen.view(), k, k);
++    const double small = std::min(k * 0.75, static_cast<double>(bw) /
++                                                (32.0 * font_size_x));
++    font_print_centered(w / 2, by + (line * 4), "Enter / Y: power off",
++                        lock_screen.view(), small, small);
++    font_print_centered(w / 2, by + (line * 5), "Esc / N: back to the game",
++                        lock_screen.view(), small, small);
++  }
++  SDL_Flip(s);
++
++  bool yes = false;
++  for (bool waiting = true; waiting;) {
++    SDL_Event e{};
++    if (SDL_WaitEvent(&e) == 0) {
++      break;
++    }
++    if (e.type == SDL_QUIT) {
++      yes = true;
++      break;
++    }
++    if (e.type != SDL_KEYDOWN) {
++      continue;
++    }
++    switch (e.key.keysym.sym) {
++      case SDLK_y:
++      case SDLK_RETURN:
++      case SDLK_KP_ENTER:
++        yes = true;
++        waiting = false;
++        break;
++      case SDLK_n:
++      case SDLK_ESCAPE:
++        waiting = false;
++        break;
++      default:
++        break;
++    }
++  }
++  // Repaint the picture under the question.
++  drawn_output_valid = false;
++  video_set_frame_ready(true);
++  return yes;
++}
++
+ auto draw_frame_window() -> void {
+   const bool osd_showing = osd_wants_repaint();
+   if (!frame_ready && !osd_showing) {
+@@ -827,7 +909,7 @@ auto frame_show_help_screen(int sx, int sy) -> void {
+   while (waiting) {
+     while (SDL_PollEvent(&event) != 0) {
+       if (event.type == SDL_KEYDOWN) {
+-        if (event.key.keysym.sym == SDLK_F12) {
++        if (event.key.keysym.sym == SDLK_F12 && frame_confirm_power_off()) {
+           system_state.mode = app_mode_exit;
+           SDL_Event qe{};
+           qe.type = SDL_QUIT;
+@@ -988,6 +1070,9 @@ auto handle_btn_debug() -> void {
+ }
+ 
+ auto handle_btn_quit() -> void {
++  if (!frame_confirm_power_off()) {
++    return;
++  }
+   SDL_Event qe{};
+   qe.type = SDL_QUIT;
+   SDL_PushEvent(&qe);
+diff --git a/src/frontends/sdl1/Frame.h b/src/frontends/sdl1/Frame.h
+index e200f63e..d488b1ca 100644
+--- a/src/frontends/sdl1/Frame.h
++++ b/src/frontends/sdl1/Frame.h
+@@ -34,6 +34,9 @@ extern SdlSurfacePtr texture;
+ // the screen).
+ auto frame_force_full_redraw() -> void;
+ 
++// Asks "Turn the computer off?" over the screen; true for yes.
++auto frame_confirm_power_off() -> bool;
++
+ constexpr int show_cycles = 15;
+ 
+ extern bool window_resized;
+diff --git a/tests/test_frontend_sdl1.cpp b/tests/test_frontend_sdl1.cpp
+index 2dc86644..3c3ed0e2 100644
+--- a/tests/test_frontend_sdl1.cpp
++++ b/tests/test_frontend_sdl1.cpp
+@@ -472,12 +472,16 @@ TEST_CASE("SDL1 Frontend Help Screen F12 Event Handling") {
+ 
+   system_state.mode = app_mode_running;
+ 
++  // F12 asks "Turn the computer off?"; Enter says yes.
+   SDL_Event key_event{};
+   key_event.type = SDL_KEYDOWN;
+   key_event.key.keysym.sym = SDLK_F12;
+   key_event.key.state = SDL_PRESSED;
+   int push_result = SDL_PushEvent(&key_event);
+   REQUIRE(push_result == 0);
++  SDL_Event enter_event = key_event;
++  enter_event.key.keysym.sym = SDLK_RETURN;
++  REQUIRE(SDL_PushEvent(&enter_event) == 0);
+ 
+   frame_show_help_screen(static_cast<int>(system_state.screen_width),
+                          static_cast<int>(system_state.screen_height));
+@@ -601,6 +605,10 @@ TEST_CASE("SDL1 Frontend Disk Choose F12 Event Handling") {
+   key_event.key.state = SDL_PRESSED;
+   int push_result = SDL_PushEvent(&key_event);
+   REQUIRE(push_result == 0);
++  // F12 asks "Turn the computer off?"; Enter says yes.
++  SDL_Event enter_event = key_event;
++  enter_event.key.keysym.sym = SDLK_RETURN;
++  REQUIRE(SDL_PushEvent(&enter_event) == 0);
+ 
+   std::string filename;
+   bool isdir = false;
+@@ -1539,3 +1547,33 @@ TEST_CASE("Volume reads amixer's level and mute state") {
+   CHECK(volume_parse_percent("amixer: Unable to find simple control") == -1);
+   CHECK(volume_parse_percent("[100%]") == 100);
+ }
++
++TEST_CASE("SDL1 Frontend: F12 on the help screen, then Esc, does not quit") {
++  setenv("SDL_VIDEODRIVER", "dummy", 1);
++  REQUIRE(SDL_Init(SDL_INIT_VIDEO) == 0);
++  REQUIRE(asset_init());
++  AppConfig config{};
++  app_config_default(&config);
++  REQUIRE(frame_create_window() == 0);
++  REQUIRE(screen != nullptr);
++  system_state.mode = app_mode_running;
++
++  SDL_Event key_event{};
++  key_event.type = SDL_KEYDOWN;
++  key_event.key.state = SDL_PRESSED;
++  key_event.key.keysym.sym = SDLK_F12;
++  REQUIRE(SDL_PushEvent(&key_event) == 0);
++  key_event.key.keysym.sym = SDLK_ESCAPE;
++  REQUIRE(SDL_PushEvent(&key_event) == 0);
++
++  frame_show_help_screen(static_cast<int>(system_state.screen_width),
++                         static_cast<int>(system_state.screen_height));
++
++  CHECK(system_state.mode == app_mode_running);
++  SDL_Event polled_event{};
++  CHECK(SDL_PeepEvents(&polled_event, 1, SDL_GETEVENT, SDL_ALLEVENTS) == 0);
++
++  frame_destroy_window();
++  asset_quit();
++  SDL_Quit();
++}
+-- 
+2.43.0
+

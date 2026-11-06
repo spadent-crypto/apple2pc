@@ -66,7 +66,7 @@ README.TXT        키 안내
 | Alt+F9 | 화면 설정 메뉴 (해상도, 확대 방식, 모니터 모양; 해상도를 바꾸면 재부팅 여부를 물음) |
 | Alt+F6 | 모니터 모양 바꾸기 (auto/16:9/16:10/5:4/3:2/4:3, 저장됨) |
 | ScrollLock | 최고 속도 |
-| F12 | 종료, 전원 꺼짐 |
+| F12 | 전원 끄기 (확인 창에서 Enter/Y, 취소는 Esc/N) |
 | Ctrl+Alt+F2 | 리눅스 셸 (Alt+F1로 복귀) |
 
 ## 부팅 순서
@@ -170,5 +170,6 @@ LinApple 패치:
 13. 바뀐 줄만 다시 그리기(안 바뀐 화면은 비교만), 모킹보드 6채널을 좌우로 먼저 섞은 뒤 리샘플링
 14. `Mockingboard Stereo`(0~100) 설정: 모킹보드 좌우 분리 폭. Apple II PC 기본값 0(모노)
 15. 볼륨 키: 이름이 다른 볼륨 컨트롤(USB 사운드 등)이면 첫 컨트롤을 씀
+16. F12 전원 끄기 전에 확인 창("TURN THE COMPUTER OFF?")
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

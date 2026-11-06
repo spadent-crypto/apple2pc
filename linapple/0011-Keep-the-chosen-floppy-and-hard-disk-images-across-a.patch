@@ -1,7 +1,7 @@
 From 8411dd88834abff7e35c8963594f0f692cdf9c13 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 09:42:51 +0900
-Subject: [PATCH 11/15] Keep the chosen floppy and hard disk images across a
+Subject: [PATCH 11/16] Keep the chosen floppy and hard disk images across a
  power-off
 
 The SmartPort card's status query filled in a local copy and never handed

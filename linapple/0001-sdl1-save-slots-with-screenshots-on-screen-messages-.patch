@@ -1,7 +1,7 @@
 From b8e080d6a411206988120030e9a414e826216788 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Mon, 19 Oct 2026 09:49:17 +0900
-Subject: [PATCH 01/15] sdl1: save slots with screenshots, on-screen messages
+Subject: [PATCH 01/16] sdl1: save slots with screenshots, on-screen messages
  and a slot picker
 
 Quick save (modifier+Shift+0..9) now also writes SaveState<n>.bmp, a

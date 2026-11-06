@@ -1,7 +1,7 @@
 From 1bfb51770bff19051a0c74deeda080a14a201a6b Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 09:33:32 +0900
-Subject: [PATCH 10/15] No fast disk access while the program is making sound
+Subject: [PATCH 10/16] No fast disk access while the program is making sound
 
 A spinning Disk II ran the machine at up to 100 times its speed, even when
 a game left the motor on while it played. As AppleWin does, fast disk
