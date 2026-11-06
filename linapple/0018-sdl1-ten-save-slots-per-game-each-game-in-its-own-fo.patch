@@ -1,0 +1,244 @@
+From d377467ac93d43a55aa5eae529e8770e3be515ac Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Sat, 7 Nov 2026 06:48:56 +0900
+Subject: [PATCH 18/18] sdl1: ten save slots per game, each game in its own
+ folder
+
+Slots go to <save folder>/<game>/SaveStateN.aws|bmp, the game being the
+image the machine boots from (hard drive 1 when one is in, else floppy
+drive 1), taken at start-up and at each reboot so changing disks inside
+a game keeps its folder. The slot picker's title names the game; the F1
+help lists F10 and F11 on lines of their own.
+---
+ src/frontends/common/HelpText.h        |  7 +-
+ src/frontends/sdl1/Frame.cpp           |  2 +
+ src/frontends/sdl1/Main.cpp            |  3 +
+ src/frontends/sdl1/SnapshotGallery.cpp | 97 ++++++++++++++++++++++++--
+ src/frontends/sdl1/SnapshotGallery.h   |  5 ++
+ 5 files changed, 107 insertions(+), 7 deletions(-)
+
+diff --git a/src/frontends/common/HelpText.h b/src/frontends/common/HelpText.h
+index e1774a91..a50489bf 100644
+--- a/src/frontends/common/HelpText.h
++++ b/src/frontends/common/HelpText.h
+@@ -42,7 +42,7 @@ struct HelpLine {
+ };
+ 
+ constexpr size_t help_header_line_count = 3;
+-constexpr size_t help_body_line_count = 32;
++constexpr size_t help_body_line_count = 33;
+ constexpr size_t help_total_line_count =
+     help_header_line_count + help_body_line_count;
+ 
+@@ -74,9 +74,10 @@ constexpr std::array<HelpLine, help_body_line_count> help_body_lines = {
+          "Ctrl+Shift+F3/F4 - Remove hard drive 1/2"},
+         {HelpFeature::separator, ""},
+         {HelpFeature::save_slots,
+-         " Ctrl+Shift+0..9 - Save to slot 0-9 (with a picture)"},
++         " Ctrl+Shift+0..9 - Save to slot 0-9 (each game has its own)"},
+         {HelpFeature::save_slots, "       Ctrl+0..9 - Load slot 0-9"},
+-        {HelpFeature::snapshot, "         F10/F11 - Load/save: pick a slot"},
++        {HelpFeature::snapshot, "             F10 - Load: pick a slot"},
++        {HelpFeature::snapshot, "             F11 - Save: pick a slot"},
+         {HelpFeature::separator, ""},
+         {HelpFeature::volume,
+          "       Alt+F7/F8 - Volume down/up (and the volume keys)"},
+diff --git a/src/frontends/sdl1/Frame.cpp b/src/frontends/sdl1/Frame.cpp
+index 9eb31862..cdb67b0e 100644
+--- a/src/frontends/sdl1/Frame.cpp
++++ b/src/frontends/sdl1/Frame.cpp
+@@ -85,6 +85,7 @@ auto to_video_rect(const SDL_Rect& r) noexcept -> VideoRect {
+ auto reset_machine_state() -> void {
+   full_speed = false;
+   linapple_reset_hard();
++  gallery_note_boot_disk();
+ }
+ 
+ auto set_icon() -> void {
+@@ -115,6 +116,7 @@ auto handle_btn_run(int mod) -> void {
+   if ((mod & KMOD_LCTRL) != 0 || (mod & KMOD_RCTRL) != 0) {
+     if (system_state.mode == app_mode_logo) {
+       linapple_reset_hard();
++      gallery_note_boot_disk();
+     } else if (system_state.mode == app_mode_running) {
+       reset_machine_state();
+     }
+diff --git a/src/frontends/sdl1/Main.cpp b/src/frontends/sdl1/Main.cpp
+index ee6dbe1a..59ed567a 100644
+--- a/src/frontends/sdl1/Main.cpp
++++ b/src/frontends/sdl1/Main.cpp
+@@ -25,6 +25,7 @@
+ #include "frontends/common/sdl/AudioDevice.h"
+ #include "frontends/common/sdl/JoystickFrontend.h"
+ #include "frontends/sdl1/Frame.h"
++#include "frontends/sdl1/SnapshotGallery.h"
+ 
+ namespace {
+ 
+@@ -219,6 +220,8 @@ auto report_timing(FramePacer& pacer, uint32_t& last_ms, uint32_t& frames)
+ }
+ 
+ auto enter_message_loop() -> void {
++  // Save slots belong to the disk the machine starts from.
++  gallery_note_boot_disk();
+   FramePacer pacer;
+   uint32_t report_ms = 0;
+   uint32_t report_frames = 0;
+diff --git a/src/frontends/sdl1/SnapshotGallery.cpp b/src/frontends/sdl1/SnapshotGallery.cpp
+index 0aacb90e..0cb6bd0c 100644
+--- a/src/frontends/sdl1/SnapshotGallery.cpp
++++ b/src/frontends/sdl1/SnapshotGallery.cpp
+@@ -20,6 +20,10 @@
+ #include <string>
+ 
+ #include "apple2/Video.h"
++#include "apple2/peripherals/Peripheral.h"
++#include "apple2/peripherals/disk/DiskCommands.h"
++#include "apple2/peripherals/harddisk/HarddiskCommands.h"
++#include "frontends/common/HarddiskFrontend.h"
+ #include "core/LinAppleCore.h"
+ #include "frontends/common/AudioMixer.h"
+ #include "frontends/common/SaveStateManager.h"
+@@ -49,6 +53,72 @@ auto save_dir() -> std::string {
+   return d;
+ }
+ 
++// Each game keeps its own ten slots, in a folder named after the disk it
++// booted from: hard drive 1 when one is in, else floppy drive 1. Taken at
++// start-up and at each reboot, so changing disks inside a game keeps it.
++std::string game_folder;
++
++auto boot_disk_path() -> std::string {
++  const int hd_slot = harddisk_frontend_slot();
++  if (hd_slot > 0) {
++    HarddiskStatus hd{};
++    size_t size = sizeof(hd);
++    if (peripheral_query(hd_slot, harddisk_query_status, &hd, &size) ==
++            peripheral_ok &&
++        hd.drive0_loaded != 0 && hd.drive0_full_path[0] != '\0') {
++      return hd.drive0_full_path;
++    }
++  }
++  DiskStatus fd{};
++  size_t size = sizeof(fd);
++  if (peripheral_query(disk_default_slot, disk_query_status, &fd, &size) ==
++          peripheral_ok &&
++      fd.drive0_loaded != 0 && fd.drive0_full_path[0] != '\0') {
++    return fd.drive0_full_path;
++  }
++  return "";
++}
++
++// The image's file name without its folder and extension, made safe for
++// a FAT folder name.
++auto folder_name_for(const std::string& path) -> std::string {
++  std::string name = path;
++  const size_t slash = name.find_last_of('/');
++  if (slash != std::string::npos) {
++    name = name.substr(slash + 1);
++  }
++  const size_t dot = name.find_last_of('.');
++  if (dot != std::string::npos && dot > 0) {
++    name = name.substr(0, dot);
++  }
++  std::string out;
++  for (const char c : name) {
++    const auto u = static_cast<unsigned char>(c);
++    if (u < 0x20 || std::strchr("\\/:*?\"<>|", c) != nullptr) {
++      out += '_';
++    } else {
++      out += c;
++    }
++  }
++  while (!out.empty() && (out.back() == ' ' || out.back() == '.')) {
++    out.pop_back();
++  }
++  while (!out.empty() && out.front() == ' ') {
++    out.erase(out.begin());
++  }
++  if (out.size() > 64) {
++    out.resize(64);
++  }
++  return out.empty() ? std::string("No disk") : out;
++}
++
++auto game_dir() -> std::string {
++  if (game_folder.empty()) {
++    gallery_note_boot_disk();
++  }
++  return save_dir() + "/" + game_folder;
++}
++
+ auto file_mtime(const std::string& path, time_t* out) -> bool {
+   struct stat st {};
+   if (stat(path.c_str(), &st) != 0) {
+@@ -212,9 +282,15 @@ auto draw_gallery(SDL_Surface* scr, const Layout& l,
+ 
+   {
+     ScopedSurfaceLock lock(scr);
+-    const char* title = save_mode ? "SAVE STATE - choose a slot"
+-                                  : "LOAD STATE - choose a slot";
+-    font_print_centered(l.w / 2, l.margin, title, lock.view(), l.k, l.k);
++    // The game the slots belong to.
++    std::string game = gallery_game_name();
++    if (game.size() > 32) {
++      game = game.substr(0, 31) + "~";
++    }
++    const std::string title =
++        std::string(save_mode ? "SAVE - " : "LOAD - ") + game;
++    font_print_centered(l.w / 2, l.margin, title.c_str(), lock.view(), l.k,
++                        l.k);
+     std::array<char, 64> footer{};
+     if (erase_armed) {
+       snprintf(footer.data(), footer.size(),
+@@ -275,10 +351,21 @@ auto erase_slot(int slot) -> void {
+ 
+ }  // namespace
+ 
++auto gallery_note_boot_disk() -> void {
++  game_folder = folder_name_for(boot_disk_path());
++}
++
++auto gallery_game_name() -> std::string {
++  if (game_folder.empty()) {
++    gallery_note_boot_disk();
++  }
++  return game_folder;
++}
++
+ auto gallery_slot_path(int slot, const char* ext) -> std::string {
+   std::array<char, 32> name{};
+   snprintf(name.data(), name.size(), "SaveState%d.%s", slot, ext);
+-  return save_dir() + "/" + name.data();
++  return game_dir() + "/" + name.data();
+ }
+ 
+ auto gallery_slot_used(int slot) -> bool {
+@@ -286,6 +373,8 @@ auto gallery_slot_used(int slot) -> bool {
+ }
+ 
+ auto gallery_quick_save(int slot) -> bool {
++  mkdir(save_dir().c_str(), 0777);
++  mkdir(game_dir().c_str(), 0777);
+   const std::string state = gallery_slot_path(slot, "aws");
+   save_state_set_filename(state.c_str());
+   std::array<char, 48> msg{};
+diff --git a/src/frontends/sdl1/SnapshotGallery.h b/src/frontends/sdl1/SnapshotGallery.h
+index fff10199..2badead9 100644
+--- a/src/frontends/sdl1/SnapshotGallery.h
++++ b/src/frontends/sdl1/SnapshotGallery.h
+@@ -13,6 +13,11 @@
+ constexpr int gallery_slot_count = 10;
+ 
+ auto gallery_slot_path(int slot, const char* ext) -> std::string;
++// Slots belong to the game: a folder named after the boot disk (hard drive
++// 1, else floppy drive 1) inside the save folder. Called at start-up and on
++// each reboot to take the disk now in.
++auto gallery_note_boot_disk() -> void;
++auto gallery_game_name() -> std::string;
+ auto gallery_slot_used(int slot) -> bool;
+ 
+ // Save the state and its screenshot to a slot; shows an on-screen message.
+-- 
+2.43.0
+

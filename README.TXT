@@ -7,7 +7,11 @@ disks\            디스크 이미지를 넣는 곳
                   5.25" : .dsk .do .po(140K) .nib .woz
                   3.5"  : .po .2mg (400K/800K)  -> UniDisk 3.5 드라이브
                   하드  : .po .hdv .2mg (32MB까지)
-saves\            세이브 슬롯 0~9 (SaveStateN.aws + 저장 순간 화면 SaveStateN.bmp)
+saves\            세이브 슬롯. 게임마다 폴더가 따로 있고 폴더마다 0~9 (10개)
+                  (saves\게임이름\SaveStateN.aws + 저장 순간 화면 SaveStateN.bmp)
+                  게임이름 = 부팅한 디스크 이미지 이름 (하드 1이 있으면 하드 1,
+                  없으면 플로피 1). 켤 때와 Ctrl+F2 재부팅 때 정해지므로
+                  게임 중에 디스크를 바꿔도 같은 폴더를 씁니다.
 wifi.txt          무선랜 이름과 비밀번호 (시계 맞추기용, 유선 랜만 쓰면 비워 두기)
 linapple.conf     에뮬레이터 설정 (기종, 속도, 슬롯 구성 등)
 display.txt       화면 설정: LCD 해상도(RESOLUTION), 비율/선명함 우선(PRIORITY)

@@ -1,7 +1,7 @@
 From bb5b83f6e8d7467455367ca3e92aa4cb2a4e4560 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 10:40:28 +0900
-Subject: [PATCH 13/17] Less work per frame: changed rows only, Mockingboard
+Subject: [PATCH 13/18] Less work per frame: changed rows only, Mockingboard
  mixed before resampling
 
 sdl1: a frame redraws only the band of rows that changed since the last

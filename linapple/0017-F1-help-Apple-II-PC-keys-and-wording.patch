@@ -1,7 +1,7 @@
 From d7b54fd2bdc8bbdea28b74fcaaa5d4bef1f64763 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Sat, 7 Nov 2026 06:15:08 +0900
-Subject: [PATCH 17/17] F1 help: Apple II PC keys and wording
+Subject: [PATCH 17/18] F1 help: Apple II PC keys and wording
 
 The help screen lists the keys the boot image adds (volume, display
 settings, monitor shape, removing disks, save slots, F12 asking before

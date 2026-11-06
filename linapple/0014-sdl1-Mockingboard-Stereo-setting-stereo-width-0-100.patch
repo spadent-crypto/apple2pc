@@ -1,7 +1,7 @@
 From 433dd082a94aa3de32234710feb8bef1a4a59f25 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 10:58:32 +0900
-Subject: [PATCH 14/17] sdl1: Mockingboard Stereo setting (stereo width 0-100)
+Subject: [PATCH 14/18] sdl1: Mockingboard Stereo setting (stereo width 0-100)
 
 A source with voices hard-panned left and right (the Mockingboard: chip
 1 left, chip 2 right) can be narrowed down to mono, so a single speaker

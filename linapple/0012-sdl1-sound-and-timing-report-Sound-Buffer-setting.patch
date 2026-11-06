@@ -1,7 +1,7 @@
 From adae61383b87aa8321a92ed61fe624b405348623 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 10:25:11 +0900
-Subject: [PATCH 12/17] sdl1: sound and timing report, Sound Buffer setting
+Subject: [PATCH 12/18] sdl1: sound and timing report, Sound Buffer setting
 
 Every 10 s stderr gets how many frames ran late or were dropped and what
 the sound card callback met: calls, short reads (gaps) and their size,
