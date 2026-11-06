@@ -1,0 +1,345 @@
+From 1bfb51770bff19051a0c74deeda080a14a201a6b Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Fri, 6 Nov 2026 09:33:32 +0900
+Subject: [PATCH 10/11] No fast disk access while the program is making sound
+
+A spinning Disk II ran the machine at up to 100 times its speed, even when
+a game left the motor on while it played. As AppleWin does, fast disk
+access now waits until the speaker has been quiet for 0.2 s and the
+Mockingboard for 0.1 s of Apple time, and a burst stops as soon as sound
+starts. Keypad + / - / * and Scroll Lock now say on screen that they
+changed the speed. The PR#n hard disk test waits for DOS to finish loading
+before it types, which the boot beep (now run at 1x) had exposed.
+---
+ CMakeLists.txt                                |  1 +
+ src/apple2/peripherals/Peripheral.cpp         | 37 ++++++++
+ src/apple2/peripherals/Peripheral_Internal.h  | 10 +++
+ .../peripherals/mockingboard/Mockingboard.cpp |  2 +
+ src/apple2/peripherals/speaker/Speaker.cpp    |  2 +
+ src/core/LinAppleCore.cpp                     |  5 +-
+ src/frontends/sdl1/SDL_Input.cpp              | 25 ++++--
+ tests/test_disk_turbo_sound.cpp               | 87 +++++++++++++++++++
+ tests/test_harddisk_firmware.cpp              |  7 ++
+ 9 files changed, 168 insertions(+), 8 deletions(-)
+ create mode 100644 tests/test_disk_turbo_sound.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b16857d7..b873e05b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -866,6 +866,7 @@ EOF
+     endif()
+     if(ENABLE_PERIPHERAL_DISK AND ENABLE_PERIPHERAL_SPEAKER)
+         add_linapple_test(minimal-boot "tests/HeadlessHarness.cpp;tests/test_minimal_boot.cpp")
++        add_linapple_test(disk-turbo-sound "tests/HeadlessHarness.cpp;tests/test_disk_turbo_sound.cpp")
+         set_tests_properties(test-minimal-boot PROPERTIES TIMEOUT ${PERIPHERAL_TEST_TIMEOUT})
+         if(ENABLE_PERIPHERAL_KEYBOARD)
+             target_compile_definitions(test-minimal-boot PRIVATE ENABLE_PERIPHERAL_KEYBOARD)
+diff --git a/src/apple2/peripherals/Peripheral.cpp b/src/apple2/peripherals/Peripheral.cpp
+index b55ff073..6b1bf493 100644
+--- a/src/apple2/peripherals/Peripheral.cpp
++++ b/src/apple2/peripherals/Peripheral.cpp
+@@ -1013,6 +1013,43 @@ auto peripheral_manager_on_vblank(bool vblank) -> void {
+   }
+ }
+ 
++namespace {
++// Cycle of the last click / register write, and whether there was one.
++uint64_t last_speaker_cycle = 0;
++uint64_t last_mockingboard_cycle = 0;
++bool speaker_heard = false;
++bool mockingboard_heard = false;
++
++auto heard_within(bool heard, uint64_t last, double seconds) -> bool {
++  if (!heard) {
++    return false;
++  }
++  const uint64_t now = cpu_get_cumulative_cycles();
++  const double hz = (current_clk_6502 > 0.0) ? current_clk_6502 : 1020484.0;
++  return now >= last && static_cast<double>(now - last) < hz * seconds;
++}
++}  // namespace
++
++auto peripheral_note_speaker_activity() -> void {
++  last_speaker_cycle = cpu_get_cumulative_cycles();
++  speaker_heard = true;
++}
++
++auto peripheral_note_mockingboard_activity() -> void {
++  last_mockingboard_cycle = cpu_get_cumulative_cycles();
++  mockingboard_heard = true;
++}
++
++auto peripheral_sound_recently_active() -> bool {
++  return heard_within(speaker_heard, last_speaker_cycle, 0.2) ||
++         heard_within(mockingboard_heard, last_mockingboard_cycle, 0.1);
++}
++
++auto peripheral_reset_sound_activity() -> void {
++  speaker_heard = false;
++  mockingboard_heard = false;
++}
++
+ auto peripheral_is_any_active() -> bool {
+   for (size_t i = 0; i < num_slots; ++i) {
+     if (peripheral_activity_state.at(i)) {
+diff --git a/src/apple2/peripherals/Peripheral_Internal.h b/src/apple2/peripherals/Peripheral_Internal.h
+index f79de730..228db39d 100644
+--- a/src/apple2/peripherals/Peripheral_Internal.h
++++ b/src/apple2/peripherals/Peripheral_Internal.h
+@@ -87,5 +87,15 @@ auto linapple_set_byte_sink(const ByteSink* vtable, void* ctx)
+ }
+ #endif
+ 
++// Sound the program is making right now. The speaker and the Mockingboard
++// call the note function on every click or register write; fast disk
++// access stays off while either was heard recently (speaker 0.2 s,
++// Mockingboard 0.1 s of Apple time, as AppleWin does), so a game that leaves
++// the drive motor on while it plays is not run at many times its speed.
++auto peripheral_note_speaker_activity() -> void;
++auto peripheral_note_mockingboard_activity() -> void;
++auto peripheral_sound_recently_active() -> bool;
++auto peripheral_reset_sound_activity() -> void;
++
+ // The built-in descriptors in the order they are walked: sorted by id.
+ auto peripheral_get_builtin_registry() -> std::vector<Peripheral*>&;
+diff --git a/src/apple2/peripherals/mockingboard/Mockingboard.cpp b/src/apple2/peripherals/mockingboard/Mockingboard.cpp
+index 152068ab..0e895ce3 100644
+--- a/src/apple2/peripherals/mockingboard/Mockingboard.cpp
++++ b/src/apple2/peripherals/mockingboard/Mockingboard.cpp
+@@ -13,6 +13,7 @@
+ #include "apple2/chips/AY8910.h"
+ #include "apple2/peripherals/Peripheral.h"
+ #include "apple2/peripherals/Peripheral_Audio.h"
++#include "apple2/peripherals/Peripheral_Internal.h"
+ #include "apple2/peripherals/Peripheral_Types.h"
+ #include "apple2/peripherals/mockingboard/MockingboardCommands.h"
+ 
+@@ -337,6 +338,7 @@ auto cx_write(void* instance, uint16_t pc, uint16_t addr, uint8_t write,
+     return 0;
+   }
+   sync_to(mb, executed_cycles);
++  peripheral_note_mockingboard_activity();
+   const size_t chip = ((addr & via_select_bit) != 0) ? 1 : 0;
+   const uint8_t reg = static_cast<uint8_t>(addr) & via_reg::mask;
+   via_write(&mb->via[chip], reg, val);
+diff --git a/src/apple2/peripherals/speaker/Speaker.cpp b/src/apple2/peripherals/speaker/Speaker.cpp
+index 53066c86..fe600758 100644
+--- a/src/apple2/peripherals/speaker/Speaker.cpp
++++ b/src/apple2/peripherals/speaker/Speaker.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "apple2/peripherals/Peripheral.h"
+ #include "apple2/peripherals/Peripheral_Audio.h"
++#include "apple2/peripherals/Peripheral_Internal.h"
+ #include "apple2/peripherals/Peripheral_Types.h"
+ 
+ namespace {
+@@ -200,6 +201,7 @@ auto speaker_strobe(void* instance) -> void {
+   auto& speaker = *static_cast<SpeakerPeripheral*>(instance);
+ 
+   speaker.current_state = !speaker.current_state;
++  peripheral_note_speaker_activity();
+ 
+   // A full queue overwrites its own tail rather than dropping the edge, so the
+   // level the synthesizer drives always ends the slice equal to the flip-flop.
+diff --git a/src/core/LinAppleCore.cpp b/src/core/LinAppleCore.cpp
+index 10696717..055c1ee3 100644
+--- a/src/core/LinAppleCore.cpp
++++ b/src/core/LinAppleCore.cpp
+@@ -92,7 +92,8 @@ bool user_turbo = false;
+ bool disk_turbo_enabled = true;
+ 
+ auto is_disk_turbo() -> bool {
+-  return disk_turbo_enabled && peripheral_is_any_active();
++  return disk_turbo_enabled && peripheral_is_any_active() &&
++         !peripheral_sound_recently_active();
+ }
+ 
+ auto is_user_turbo() -> bool {
+@@ -435,7 +436,7 @@ static auto run_frame_cycles(uint32_t cycles) -> uint32_t {
+   uint32_t executed = 0;
+   for (int i = 0; i < full_speed_disk_iterations; ++i) {
+     executed += internal_run_cycles(cycles);
+-    if (disk_turbo && !peripheral_is_any_active()) {
++    if (disk_turbo && !is_disk_turbo()) {
+       break;
+     }
+   }
+diff --git a/src/frontends/sdl1/SDL_Input.cpp b/src/frontends/sdl1/SDL_Input.cpp
+index d0cdb49a..0700194d 100644
+--- a/src/frontends/sdl1/SDL_Input.cpp
++++ b/src/frontends/sdl1/SDL_Input.cpp
+@@ -26,6 +26,7 @@
+ #include "frontends/common/sdl/MouseInput.h"
+ #include "frontends/sdl1/Volume.h"
+ #include "frontends/sdl1/Frame.h"
++#include "frontends/sdl1/SnapshotGallery.h"
+ 
+ namespace {
+ 
+@@ -214,6 +215,20 @@ auto sdl1_x11_keycode_to_hid(uint8_t keycode) -> uint8_t {
+ 
+ namespace {
+ 
++// Keypad + / - / * change the speed; say so on screen, since a laptop's
++// embedded keypad (Num Lock) can press them without the player noticing.
++auto show_speed(uint32_t speed) -> void {
++  std::array<char, 64> msg{};
++  if (speed == emulation_speed_normal) {
++    std::snprintf(msg.data(), msg.size(), "Speed: normal (1 MHz)");
++  } else {
++    std::snprintf(msg.data(), msg.size(), "Speed %u (normal 10, keypad *)",
++                  speed);
++  }
++  std::printf("Now speed=%u\n", speed);
++  osd_toast(msg.data());
++}
++
+ auto sdl1_hid_usage(const SDL_keysym& keysym) -> uint8_t {
+   return video_driver_is_x11() ? sdl1_x11_keycode_to_hid(keysym.scancode)
+                                : keysym_to_hid(keysym.sym);
+@@ -305,18 +320,15 @@ auto handle_key_down(SDLKey key_sym, SDLMod key_mod, uint8_t scancode) -> void {
+   }
+ 
+   if (key_sym == SDLK_KP_PLUS) {
+-    const uint32_t speed = linapple_speed_increase();
+-    std::printf("Now speed=%u\n", speed);
++    show_speed(linapple_speed_increase());
+     return;
+   }
+   if (key_sym == SDLK_KP_MINUS) {
+-    const uint32_t speed = linapple_speed_decrease();
+-    std::printf("Now speed=%u\n", speed);
++    show_speed(linapple_speed_decrease());
+     return;
+   }
+   if (key_sym == SDLK_KP_MULTIPLY) {
+-    const uint32_t speed = linapple_speed_reset();
+-    std::printf("Now speed=%u\n", speed);
++    show_speed(linapple_speed_reset());
+     return;
+   }
+ 
+@@ -333,6 +345,7 @@ auto handle_key_down(SDLKey key_sym, SDLMod key_mod, uint8_t scancode) -> void {
+   if (key_sym == SDLK_SCROLLOCK) {
+     const bool turbo = linapple_toggle_turbo();
+     std::printf("Turbo mode: %s\n", turbo ? "ON" : "OFF");
++    osd_toast(turbo ? "Full speed ON (Scroll Lock)" : "Full speed OFF");
+     return;
+   }
+ 
+diff --git a/tests/test_disk_turbo_sound.cpp b/tests/test_disk_turbo_sound.cpp
+new file mode 100644
+index 00000000..749a9c47
+--- /dev/null
++++ b/tests/test_disk_turbo_sound.cpp
+@@ -0,0 +1,87 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
++// Fast disk access stays off while the program is making sound, so a game
++// that leaves the drive motor on while it plays runs at its own speed.
++
++#include "HeadlessHarness.h"
++#include "apple2/CPU.h"
++#include "apple2/Memory.h"
++#include "apple2/peripherals/Peripheral.h"
++#include "apple2/peripherals/Peripheral_Internal.h"
++#include "core/LinAppleCore.h"
++#include "doctest.h"
++#include "test_fixtures.h"
++
++namespace {
++
++using TestConfig = TestFixtures::ScopedTestConfig;
++
++constexpr uint16_t speaker_strobe = 0xC030;
++
++auto click() -> void { io_map_dispatch(0, speaker_strobe, 0, 0, 0); }
++
++}  // namespace
++
++// Runs until the empty drive's search goes to full speed; false if it never
++// does within two seconds.
++static auto run_until_full_speed(HeadlessHarness& harness) -> bool {
++  for (int i = 0; i < 120; ++i) {
++    harness.run_frames(1);
++    if (linapple_is_full_speed()) {
++      return true;
++    }
++  }
++  return false;
++}
++
++TEST_CASE("Disk turbo: the boot beep holds it off, then the drive goes fast") {
++  TestConfig config(TestConfig::disk_ii_only());
++  HeadlessHarness harness(config);
++  harness.boot();
++  // The beep at power-on: the drive spins, but the machine stays at 1x.
++  harness.run_frames(10);
++  CHECK(peripheral_is_any_active());
++  CHECK(peripheral_sound_recently_active());
++  CHECK_FALSE(linapple_is_full_speed());
++  // Once it has been quiet for 0.2 s, the spinning drive runs at full speed.
++  CHECK(run_until_full_speed(harness));
++}
++
++TEST_CASE("Disk turbo: speaker clicks hold a spinning drive at 1x") {
++  TestConfig config(TestConfig::disk_ii_only());
++  HeadlessHarness harness(config);
++  harness.boot();
++  harness.run_frames(10);
++  REQUIRE(peripheral_is_any_active());
++
++  for (int i = 0; i < 60; ++i) {
++    click();
++    harness.run_frames(1);
++    CHECK_FALSE(linapple_is_full_speed());
++  }
++  CHECK(peripheral_is_any_active());
++
++  CHECK(run_until_full_speed(harness));
++}
++
++TEST_CASE("Disk turbo: the sound window is 0.2 s speaker, 0.1 s Mockingboard") {
++  TestConfig config(TestConfig::enhanced_2e_only());
++  HeadlessHarness harness(config);
++  harness.boot();
++  harness.run_frames(30);  // past the power-on beep
++
++  peripheral_reset_sound_activity();
++  CHECK_FALSE(peripheral_sound_recently_active());
++
++  peripheral_note_speaker_activity();
++  harness.run_frames(9);  // 0.15 s
++  CHECK(peripheral_sound_recently_active());
++  harness.run_frames(6);  // 0.25 s
++  CHECK_FALSE(peripheral_sound_recently_active());
++
++  peripheral_note_mockingboard_activity();
++  harness.run_frames(3);  // 0.05 s
++  CHECK(peripheral_sound_recently_active());
++  harness.run_frames(5);  // 0.13 s
++  CHECK_FALSE(peripheral_sound_recently_active());
++}
+diff --git a/tests/test_harddisk_firmware.cpp b/tests/test_harddisk_firmware.cpp
+index 4de55c6d..de20d687 100644
+--- a/tests/test_harddisk_firmware.cpp
++++ b/tests/test_harddisk_firmware.cpp
+@@ -943,6 +943,13 @@ TEST_CASE(
+ 
+   linapple_reset_hard();
+   REQUIRE(run_frames_until_prompt(boot_frame_cap));
++  // DOS may print its prompt while it is still loading; keys typed then are
++  // lost. The drive stopping is DOS done.
++  for (uint32_t frame = 0; frame < boot_frame_cap && peripheral_is_any_active();
++       ++frame) {
++    linapple_run_frame(frame_cycles);
++  }
++  REQUIRE_FALSE(peripheral_is_any_active());
+ 
+   // A key held a hundred machine frames repeats on a //e, so strokes are
+   // counted in the machine's frames with the drive's turbo off.
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
 From 304c13f7d1753408e0b3b225e7eb37a34e10b766 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Mon, 19 Oct 2026 09:59:10 +0900
-Subject: [PATCH 2/9] snapshot: keep the .aws layout the same on 32-bit x86
+Subject: [PATCH 02/11] snapshot: keep the .aws layout the same on 32-bit x86
 
 On i386 a uint64_t or double member is only 4-byte aligned inside a
 struct, so SsCpu6502, SsIoJoystick and SsIoSpeaker shrank and the

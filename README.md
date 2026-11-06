@@ -164,5 +164,7 @@ LinApple 패치:
 7. 화면 설정 메뉴(Alt+F9): display.txt와 설정을 고치고 필요하면 재부팅 요청
 8. 볼륨 키(Alt+F7/Alt+F8, 키보드의 볼륨·음소거 키): amixer로 사운드 카드 볼륨, 화면 표시, 저장
 9. 빠른 소프트웨어 확대: 열 위치 표 + 원본 줄을 한 번만 확대해 복사 (1024x768에서 CPU 약 1/4, 그림은 같음)
+10. 소리가 나는 동안은 디스크 가속을 하지 않음(AppleWin과 같은 규칙: 스피커 0.2초, 모킹보드 0.1초). 키패드 +/-/*, ScrollLock 속도 변경을 화면에 표시
+11. 고른 플로피·하드디스크 이미지를 다음 부팅에도 유지 (SmartPort 상태 질의가 결과를 돌려주지 않던 버그 수정, 하드 선택·꺼내기 때 바로 저장)
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

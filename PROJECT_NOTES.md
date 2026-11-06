@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0 2026-11-06). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0·v2.1 2026-11-06). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-06 (v2.0: 볼륨 키, 화면 확대 속도 약 4배)
+마지막 갱신: 2026-11-06 (v2.1: 소리 날 때 디스크 가속 끔, 디스크 이미지 유지)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,17 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-06, v2.1): 너무 빠름, 디스크 이미지 유지
+- 사용자 보고(v2.0 실기): "너무 빨라서 게임을 할 수가 없어" → `Enhance Disk Speed = 0`으로 바꾸니 속도 정상. 원인은 디스크 가속: Disk II 모터가 돌면 프레임당 최대 100프레임(LinAppleCore `full_speed_disk_iterations`)을 돌림. 모터를 켠 채로 진행되는 게임은 플레이 중에도 가속. 예전엔 화면 확대가 CPU를 다 써서 가려져 있었음
+- LinApple 패치 10: AppleWin 규칙(`g_bFullSpeed = 모터 && !Spkr_IsActive() && !MB IsActiveToPreventFullSpeed()`)을 따라 스피커가 0.2초, 모킹보드(VIA 쓰기)가 0.1초 안에 쓰였으면 디스크 가속 안 함. 가속 중에도 소리가 나면 바로 멈춤. `Peripheral_Internal.h`의 `peripheral_note_*_activity`, `peripheral_sound_recently_active`. 테스트 `tests/test_disk_turbo_sound.cpp`. 키패드 +/-/*, ScrollLock 속도 변경에 OSD 표시(노트북 내장 키패드로 모르게 눌릴 수 있음)
+- 부팅 비프음이 이제 1배속으로 돌아서 `test_harddisk_firmware`의 PR#n 테스트가 DOS 로딩 중에 키를 치게 됨 → 드라이브가 멈출 때까지 기다리도록 테스트 수정
+- 사용자 요청: "floppy, hdd 이미지 마운트한 설정을 재부팅하더라도 유지" → 원인 두 가지
+  - 플로피: F3/F4 선택은 `[Slots] Disk Image 1`에 저장되지만 `Slot 6 Autoload = 0`이면 시작 때 읽지 않고 Master.dsk를 넣음 → 기본 conf를 1로, 세션이 기존 conf의 0을 1로 바꿈
+  - 하드: SmartPort 카드의 `harddisk_query_status`가 지역 변수만 채우고 `out`에 복사하지 않음(패치 3의 버그) → 프론트엔드가 드라이브를 비어 있다고 보고 빈 값을 기록. 복사 추가. 하드 선택·꺼내기·플로피 꺼내기 때 바로 `Configuration::save()`(시작 때 마운트는 파일을 건드리지 않음: `test_harddisk_config_startup`이 확인)
+  - LinApple 패치 11. SmartPort 기록 테스트를 `test_harddisk_config_runtime_insert.cpp`에 추가
+- 알아둘 것: LinApple의 `Configuration::save()`는 linapple.conf를 주석 없이 다시 씀(원래 동작)
+- 사용자 보고: 속도는 정상인데 "소리가 비정상" → `system-info.txt`(ALSA hw_params)와 증상(끊김/지직거림/느림/음 높이) 받아서 볼 것
 
 ### 추가 (2026-11-06, v2.0): 볼륨 조절, 화면 확대 속도
 - 사용자 보고: "볼륨 조절이 안 되네?" → 그동안 세션이 amixer로 85%만 고정하고 키가 없었음
@@ -171,6 +182,8 @@ LinApple 패치:
 7. 화면 설정 메뉴(Alt+F9, `DisplayMenu.cpp`)
 8. 볼륨 키(Alt+F7/F8, 키보드 볼륨·음소거 키, `Volume.cpp`)
 9. 빠른 소프트웨어 확대(열 표 + 원본 줄 한 번만 확대)
+10. 소리 나는 동안 디스크 가속 안 함, 속도 변경 OSD
+11. 고른 플로피·하드 이미지 유지(SmartPort 상태 질의 버그 수정)
 
 ## 5. 다시 빌드하는 법
 
@@ -193,7 +206,8 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 ## 6. 다음에 할 일 후보
 
 - [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드 카드(`sound-cards.txt`), 무선랜 칩 모델)
-- [ ] X61s에서 v2.0 확인: 게임·소리 속도, 볼륨 버튼(thinkpad_acpi), `system-info.txt` 받아 보기
+- [ ] X61s에서 v2.1 확인: 게임 속도(디스크 가속 켠 채로), 볼륨 버튼(thinkpad_acpi), 디스크 유지
+- [ ] 실기에서 "소리가 비정상" 원인 찾기: `system-info.txt`와 증상 받기
 - [ ] LG gram 14Z970: BIOS(Boot Mode/CSM) 진입 결과 대기
 - [ ] (선택) 맥 QEMU 확인용 저해상도(640x480) 부팅 옵션
 - [ ] 실기에서 해상도별 속도 확인 (특히 auto·1280x1024 이상)
