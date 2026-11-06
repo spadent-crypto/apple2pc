@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06, v2.6~v2.8 2026-11-07). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06, v2.6~v2.8·v3.0 2026-11-07). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-07 (v2.8: 게임별 세이브 폴더, 10개씩)
+마지막 갱신: 2026-11-07 (v3.0: USB 1.1 부팅 — 읽는 양 20.1MB → 9.4MB, squashfs 루트)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -19,11 +19,22 @@
 ## 2. 현재 상태
 
 ### 완료 (1차, 2026-10-20)
-- `apple2pc.img` (약 600MB, zip 29MB): MBR, 1번 ext4 시스템(읽기 전용 마운트), 2번 FAT32 `APPLE2` 데이터
+- `apple2pc.img` (약 336MB, zip 24MB): MBR, 1번 squashfs 시스템(xz, 64MB 파티션), 2번 FAT32 `APPLE2` 데이터 (v3.0부터; 그 전엔 ext4 320MB)
 - GRUB 메뉴 없음 → 커널 quiet → LinApple 전체화면 (프레임버퍼, X 없음) → F12로 전원 꺼짐
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
-- 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+- 네트워크: 기본 꺼짐(v3.0). `APPLE2\wifi.txt`의 `WIRED=on` 또는 SSID가 있으면 부팅 20초 뒤 apple2-net(모듈 coldplug, 유선 DHCP, 무선, NTP), `network.txt`에 IP 기록
+
+### 변경 (2026-11-07, v3.0): USB 1.1 부팅 시간 줄이기
+- 사용자: "USB 1.1 구형 노트북을 활용하려고 시작한 프로젝트인데 실제 해보니 부팅에 시간이 많이 걸려"
+- 잴 방법: QEMU에서 UHCI(USB 1.1) usb-storage로 부팅(`-device piix3-usb-uhci -device usb-storage`), `-drive ...,throttling.bps-read=`로 속도 제한, `info blockstats` rd_bytes와 화면(1024 폭, 밝은 픽셀)으로 LinApple까지 시간·바이트. 스크래치 `bootbench.py`. `-trace blk_co_preadv -D log`로 읽은 오프셋을 debugfs icheck/ncheck(ext4)로 파일에 매핑(`mapreads.py`)
+- 한계: QEMU는 CPU 흉내가 느려 시간보다 **읽은 바이트**가 의미 있음. 300KB/s 제한에서는 SeaBIOS가 USB에서 멈춤(흉내 불가)
+- v2.8: 20.1MB (bzImage 8.6MB 전부 + busybox 2.1 + libc 2.0 + libstdc++ 1.6 + linapple 1.3 + libasound 1.1 ...: 미리 읽기 때문에 파일 통째로)
+- 바꾼 것과 효과(읽은 양): 커널 LZ4→ZSTD, IPv6·KALLSYMS 끔 (bzImage 6.2MB) → 유선 랜 드라이버 25개 모듈로, MD/DM·9P 끔 (5.4MB) → 16.9MB; 미리 읽기 16KB(inittab에서 sysfs 마운트 직후) → 14.1MB; busybox 동적(libc 공유, 2.09→0.76MB) → 13.7MB; 루트를 squashfs(xz, -Xbcj x86) + EXT4 끔 (bzImage 5.2MB) → 블록 64K 9.5 / 32K 9.3 / 16K 9.7 / 128K 9.8MB → 32K 선택
+- 네트워크 기본 끔: `wifi.txt`에 `WIRED=off`(새 항목), SSID나 WIRED=on, 또는 wpa_supplicant.conf가 있을 때만 `sleep 20` 뒤 apple2-net. `usb-storage.delay_use=0`. apple2-sound USB 안정 대기 0.5→0.3초. network.txt의 FujiNet 줄 지움
+- GRUB 코어 모듈: ext2 → squash4 xzio (GRUB squash4는 zlib/lzo/xz만, zstd 없음 → squashfs는 xz). 파티션 1 시작 섹터 370, 크기 64M 고정(이미지 604MB → 336MB)
+- 확인(QEMU IDE, 1GB 디스크): 부팅, APPLE2 959MB로 늘림, 사운드, F12 확인 뒤 전원 꺼짐; WIRED=on이면 20초 뒤 e1000 모듈 로드·DHCP(network.txt)
+- 남은 큰 것: bzImage 5.2MB(커널 core·net·sound·fs). XZ 커널 압축은 ~15% 작지만 옛 CPU에서 풀기가 느려 비슷할 것으로 보고 안 함
 
 ### 추가 (2026-11-07, v2.8): 게임별 세이브 슬롯
 - 사용자 요청: "세이브 로드에서 게임별로 10개라야 할 거 같은데... 지금은 모두 10개", "게임별로도 폴더를 만들고 거기에 10개씩 저장하게"
@@ -44,7 +55,7 @@
 
 ### 추가 (2026-11-06, v2.5): 그냥 끄거나 USB를 뽑을 때
 - 사용자 질문: "게임하다가 그냥 끄거나 usb를 뽑으면 파티션이나 fs이 망가지지 않아?"
-- 현재: 루트 ext4는 ro. APPLE2(FAT32)는 `rw,noatime,flush`. 플로피 쓰기는 모터가 멈출 때 트랙을 fwrite+fflush(커널까지만), SmartPort는 pwrite 후 1초 넘게 지났으면 fsync. 커널 기본 writeback은 30초라 마지막 저장이 최대 30초 메모리에 머묾
+- (v2.5 당시) 루트 ext4는 ro. APPLE2(FAT32)는 `rw,noatime,flush`. 플로피 쓰기는 모터가 멈출 때 트랙을 fwrite+fflush(커널까지만), SmartPort는 pwrite 후 1초 넘게 지났으면 fsync. 커널 기본 writeback은 30초라 마지막 저장이 최대 30초 메모리에 머묾
 - 세션: `vm.dirty_expire_centisecs=100`, `dirty_writeback_centisecs=100` → 쓴 것이 약 2초 안에 USB로. system-info.txt에 값
 - QEMU 확인: Alt+F7 두 번 뒤 4초 만에 QEMU quit(전원 끊기) → conf에 새 볼륨이 남아 있음, `fsck.fat -n`은 dirty bit 말고 오류 없음
 - 남는 것: 리눅스 vfat가 마운트 중 dirty bit를 켜서, 그냥 끄면 Windows가 검사를 물음(무해). 쓰는 바로 그 순간 끊기면 그 파일은 깨질 수 있음. 첫 부팅 파티션 늘리기 중에는 끄면 안 됨
@@ -273,7 +284,8 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 - [ ] 무선랜 칩 모델 확인 → 필요한 드라이버·펌웨어 추가
 - [ ] 부팅 시간 측정·단축 (커널 크기, 서비스 순서)
 - [ ] (선택) 화면 하단 드라이브 LED 표시 끄기 옵션 (`Show Leds = 0`)
-- [ ] (선택) 네트워크를 아예 빼서 부팅 가볍게 (지금은 시계 맞추기용으로만 남음)
+- [x] 네트워크 기본 끔 (v3.0, `WIRED=on`이나 SSID로 켬)
+- [ ] 실기 USB 1.1 노트북에서 v3.0 부팅 시간 재기 (전원 → LinApple 화면)
 - [ ] (선택) FujiNet을 다시 쓰고 싶으면 2026-11-04 이전 커밋의 build.sh·overlay 참고
 - [ ] SuperSprite: StarSprite 데모·게임 디스크로 실제 동작 확인 (asimov `images/hardware/video/StarSprite-SuperSprite-Programs.zip`)
 - [ ] (선택) SuperSprite Echo II 음성(TMS5220) 구현

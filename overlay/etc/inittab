@@ -1,6 +1,9 @@
 # Apple II PC: no login, no getty. tty1 runs the emulator.
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
+# Read ahead little: on a USB 1.1 stick every byte counts, and programs
+# and libraries are only partly used. (16 KB instead of the usual 128.)
+::sysinit:/bin/sh -c 'for f in /sys/block/*/queue/read_ahead_kb; do echo 16 >"$f"; done'
 ::sysinit:/bin/mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 ::sysinit:/bin/mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
 ::sysinit:/bin/mkdir -p /dev/pts /dev/shm

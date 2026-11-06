@@ -20,10 +20,10 @@ case "$1" in
 		for d in $dns; do echo "nameserver $d" >> "$RESOLV.new"; done
 		mv "$RESOLV.new" "$RESOLV"
 		echo "$interface $ip" > /run/net-up
-		# Where to find FujiNet's web page, for the user.
+		# The address it got, for the user.
 		if mountpoint -q /media/apple2; then
-			printf 'interface=%s\r\nip=%s\r\nFujiNet web: http://%s:8000\r\n' \
-				"$interface" "$ip" "$ip" > /media/apple2/network.txt
+			printf 'interface=%s\r\nip=%s\r\n' "$interface" "$ip" \
+				> /media/apple2/network.txt
 		fi
 		;;
 esac

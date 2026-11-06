@@ -11,7 +11,7 @@
 | 5.25" | 슬롯 6. Disk II 드라이브 2개 (.dsk .do .po .nib .woz) |
 | 소리 | Mockingboard(슬롯 4) + 스피커. 내장 AC'97/HD Audio, 그 시절 PCI 사운드 카드, ISA 사운드 카드(PnP 또는 `sound.txt`로 포트·IRQ 지정) |
 | SuperSprite | 슬롯 7에 넣고 SmartPort는 슬롯 5로 옮겨 사용. TMS9918A 스프라이트 화면을 애플 화면 위에 합성, AY-3-8912 소리 (Echo II 음성은 미지원) |
-| 네트워크 | 시계 맞추기용. 유선 랜 자동(DHCP), 내장 PCI/USB 무선랜은 `wifi.txt`에 이름·비밀번호 |
+| 네트워크 | 시계 맞추기용, 기본은 꺼짐. `wifi.txt`에 `WIRED=on`(유선) 또는 무선랜 이름·비밀번호를 적으면 부팅 20초 뒤 켜짐 |
 
 ## 굽는 법 (Rufus)
 
@@ -30,11 +30,22 @@
 
 | 파티션 | 형식 | 내용 |
 |---|---|---|
-| 1 | ext4, 읽기 전용으로 마운트 | 리눅스, 에뮬레이터 |
+| 1 | squashfs(xz 압축, 읽기 전용), 64MB | 리눅스, 에뮬레이터 |
 | 2 | FAT32 `APPLE2` | 디스크 이미지, 세이브, 설정 파일 (윈도우에서도 열림) |
 
 시스템 파티션은 읽기 전용이라 실행 중에 전원을 그냥 꺼도 망가지지 않습니다.
-세이브와 디스크 쓰기는 1초 안에 디스크에 기록합니다.
+세이브와 디스크 쓰기는 약 2초 안에 디스크에 기록합니다.
+
+### 부팅 속도 (USB 1.1)
+
+USB 1.1(약 1MB/s, BIOS를 거칠 때는 더 느림)에서는 읽는 바이트 수가 부팅 시간을 정합니다.
+LinApple 화면까지 읽는 양을 v2.8 20.1MB → v3.0 9.4MB로 줄였습니다.
+
+- 커널: LZ4 → ZSTD 압축, 유선 랜 드라이버는 모듈로, IPv6·RAID/LVM·9P·심볼 표 빼기 (8.6MB → 5.2MB)
+- 시스템 파티션: ext4 → squashfs(xz, x86 필터, 32K 블록)
+- busybox: 정적 → libc 공유 (2.1MB → 0.8MB), 미리 읽기 128KB → 16KB
+- 네트워크(모듈 일괄 로드, DHCP, NTP)는 기본으로 끔, 켜도 부팅 20초 뒤에 시작
+- `usb-storage.delay_use=0`(USB 저장장치 1초 대기 없앰)
 
 `APPLE2` 파티션 안:
 
@@ -113,7 +124,8 @@ README.TXT        키 안내
 
 ## 네트워크
 
-- 유선 랜: 케이블만 꽂으면 DHCP로 붙습니다. 그 시절 Intel, Realtek, VIA, SiS, nVidia, Broadcom, Marvell, Atheros 칩을 넣었습니다.
+- 네트워크는 시계 맞추기에만 쓰여서 기본으로 꺼져 있습니다. 켜면 부팅 20초 뒤에(애플이 다 뜬 다음) 시작합니다.
+- 유선 랜: `APPLE2\wifi.txt`에서 `WIRED=on`으로 바꾸면 DHCP로 붙습니다. 그 시절 Intel, Realtek, VIA, SiS, nVidia, Broadcom, Marvell, Atheros 칩을 넣었습니다(모듈).
 - 무선랜: `APPLE2\wifi.txt`에 `SSID=`와 `PASSWORD=`를 적고 다시 켭니다. 2.4GHz만 됩니다.
   - 넣은 드라이버: Atheros(ath5k, ath9k), Ralink(rt2400/2500/rt61/rt2800), Realtek(rtl8180/8185, rtl8187, rtl8192ce/se/de, rtl8188ee), Intel PRO/Wireless 2100/2200, Intel 3945/4965/5000 계열, Broadcom(brcmsmac, b43), Intersil Prism54, ADMtek, USB 무선랜 일부.
   - **Broadcom b43(BCM4306/4311/4318 등 구형)은 펌웨어를 함께 넣을 수 없어서 동작하지 않습니다.** 그 카드라면 다른 무선랜이나 유선 랜을 쓰세요.

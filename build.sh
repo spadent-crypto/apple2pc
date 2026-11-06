@@ -47,7 +47,7 @@ stage_deps() {
 	apt-get update -q
 	apt-get install -y -q build-essential gcc-multilib g++-multilib git cmake \
 		pkg-config flex bison bc libelf-dev libssl-dev lz4 zstd \
-		python3 imagemagick cc65 grub-pc-bin genimage mtools dosfstools \
+		python3 imagemagick cc65 grub-pc-bin genimage mtools dosfstools squashfs-tools \
 		e2fsprogs fdisk xz-utils curl kmod zip
 	apt-get install -y -q libc6-dev:i386 libasound2-dev:i386 libpng-dev:i386 \
 		libx11-dev:i386 libxext-dev:i386 libssl-dev:i386 libexpat1-dev:i386 \
@@ -88,7 +88,7 @@ stage_kernel() {
 }
 
 stage_busybox() {
-	log "busybox (static)"
+	log "busybox (shares libc with LinApple)"
 	local b=$WORK/src/busybox
 	cp "$KIT/busybox/busybox.config" "$b/.config"
 	{ yes "" || true; } | make -C "$b" CC="gcc -m32" HOSTCC=gcc oldconfig >/dev/null
@@ -257,11 +257,15 @@ stage_image() {
 
 	grub-mkimage -d /usr/lib/grub/i386-pc -O i386-pc -o "$img/grub.img" \
 		-p "(hd0,msdos1)/boot/grub" \
-		boot linux ext2 part_msdos normal biosdisk vbe video video_fb \
+		boot linux squash4 xzio part_msdos normal biosdisk vbe video video_fb \
 		fat regexp test configfile
 	cp /usr/lib/grub/i386-pc/boot.img "$img/"
 
-	mkfs.ext4 -q -F -L apple2sys -d "$ROOT" "$img/rootfs.ext2" 320M
+	# Compressed and read-only: half the bytes to read from a USB 1.1 stick.
+	# 32K blocks read the least before the Apple is up (measured: 16K 9.7 MB,
+	# 32K 9.3 MB, 64K 9.5 MB, 128K 9.8 MB) and unpack fastest per page.
+	mksquashfs "$ROOT" "$img/rootfs.squashfs" -comp xz -Xbcj x86 -b 32K \
+		-noappend -all-root -no-xattrs -quiet
 
 	# What the APPLE2 data partition holds the first time.
 	local data=$img/apple2-data

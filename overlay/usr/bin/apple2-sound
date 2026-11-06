@@ -70,7 +70,7 @@ while [ $i -lt 6 ]; do
 	m=$(ls /sys/bus/usb/devices 2>/dev/null | wc -l)
 	[ "$m" = "$n" ] && break
 	n=$m
-	sleep 0.5
+	sleep 0.3
 	i=$((i + 1))
 done
 usb_found=""

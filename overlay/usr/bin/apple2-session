@@ -69,8 +69,15 @@ else
 	sed -i "/^Screen Height[ \t]*=/a Scale Mode = $mode\r" "$CONF"
 fi
 
-# The network comes up on its own (for the clock); the Apple boots meanwhile.
-/usr/bin/apple2-net &
+# The network is only for the clock, so it is off unless APPLE2\wifi.txt
+# names a Wi-Fi network or says WIRED=on; it then waits until the Apple is
+# up, so it does not compete for a slow USB stick at start-up.
+net_on=""
+if [ -f "$DATA/wifi.txt" ]; then
+	tr -d '\r' <"$DATA/wifi.txt" | grep -qE '^SSID=.+|^WIRED=on' && net_on=1
+fi
+[ -f "$DATA/wpa_supplicant.conf" ] && net_on=1
+[ -n "$net_on" ] && { sleep 20; /usr/bin/apple2-net; } &
 
 # Fit the emulator to whatever mode GRUB gave the framebuffer.
 if [ -r /sys/class/graphics/fb0/virtual_size ]; then
