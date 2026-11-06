@@ -15,7 +15,10 @@ display.txt       화면 설정: LCD 해상도(RESOLUTION), 비율/선명함 우
 sound.txt         ISA 사운드 카드의 포트/IRQ/DMA 설정 (내장·PCI는 저절로 잡힘)
 sound-cards.txt   부팅할 때 잡힌 사운드 카드 (부팅마다 새로 적힘)
 grow.txt          처음 켤 때 이 파티션을 장치 끝까지 늘린 기록
-system-info.txt   CPU 클럭, 화면 모드, 사운드 장치 상태 (부팅마다 새로 적힘, 느리거나 소리가 이상할 때 확인)
+system-info.txt   CPU 클럭·온도, 화면 모드, 사운드 장치 상태 (부팅할 때와 F12로 끌 때 새로 적힘)
+                  끌 때는 10초마다 잰 "늦은 프레임"과 "소리 모자람"도 들어 있습니다.
+                  느리거나 소리가 끊기면 게임을 1분쯤 돌리고 F12로 끈 뒤 이 파일을 보세요.
+                  소리가 끊기면 linapple.conf 의 Sound Device = plughw:0,0 도 해 보세요.
 
 화면
 ----

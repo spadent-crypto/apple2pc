@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0·v2.1 2026-11-06). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.2 2026-11-06). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-06 (v2.1: 소리 날 때 디스크 가속 끔, 디스크 이미지 유지)
+마지막 갱신: 2026-11-06 (v2.2: 모킹보드 끊김 대응 — 그리기·믹서 부담 줄임, 소리/타이밍 통계)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,18 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-06, v2.2): 모킹보드 소리가 끊기고 느림 (X61s)
+- 사용자 보고: v2.1, X61s, 모킹보드 소리가 "툭툭 끊기면서 아주 느림"
+- 이 서버(2.1GHz Xeon 1코어)에서 모킹보드 톤을 계속 내는 부트 디스크(`mbtone.dsk`, 레지스터를 쉬지 않고 쓰는 `mbstress.dsk`, 둘 다 스크래치에서 python으로 만듦: 부트 섹터 $0801, 슬롯 4 VIA $C400/$C480, 모터 끄기 $C0E8)로 재 봄: 7% → 8~9%. 칩 에뮬레이션만으로는 무겁지 않음
+- QEMU(TCG, 느린 CPU)에서는 600프레임/10초 중 270만 돌고 소리가 계속 모자람 = X61s 증상과 같은 모양 → 느린 CPU에서 못 따라가는 것
+- callgrind(valgrind i386, SIGINT로 정상 종료시켜야 덤프됨): 화면 확대 34% + SDL_BlitCopy 18% + 믹서 리샘플 18% + 모킹보드 12%
+- 알게 된 것: SDL1 fbcon은 SWSURFACE를 요청하면 항상 그림자 표면을 만들고 SDL_Flip마다 전체를 프레임버퍼로 복사·변환(16비트 모드면 32→16). 즉 프레임마다 전체 화면 3번 처리(확대→texture, texture→그림자, 그림자→fb)
+- LinApple 패치 13: 출력을 줄 단위로 이전 프레임과 비교해 바뀐 줄 띠만 그림자 표면에 바로 확대하고 SDL_UpdateRect로 그 띠만 보냄. 안 바뀌면 비교만. 메시지(OSD)가 떠 있거나 디버거면 예전 전체 경로, `frame_refresh()`(전체 플립)와 메뉴들의 SDL_Flip 뒤에는 다음 프레임을 전체로. 믹서: 3채널 이상 소스는 소스 주파수에서 좌우로 먼저 섞은 뒤 2채널만 리샘플(선형이라 같음), 박스 필터 빠른 길
+- 결과: 정지 화면 7% → 2%, 모킹보드 스트레스 9% → 5%. QEMU 스트레스 270 → 480프레임/10초
+- LinApple 패치 12: 10초마다 `timing: N frames, late, dropped; audio: calls, short, skipped, longest wait`를 stderr(→ /run/linapple.log)에. 오디오 장치 열린 값도 한 줄. `apple2-sysinfo now`를 LinApple 종료 뒤 세션이 실행 → system-info.txt에 통계, 온도(thermal_zone), 열 스로틀 횟수
+- 알게 된 것: 기본 ALSA 장치(dmix)가 주기를 정해서 SDL 버퍼는 `Sound Buffer`와 상관없이 940샘플(48k의 1024)로 됨. 더 큰 버퍼를 쓰려면 `Sound Device = plughw:0,0`(세션이 AUDIODEV로 넘김)
+- 다음: X61s의 system-info.txt를 받아 late/dropped(CPU 부족)인지 short만 있는지(장치 쪽) 보기
 
 ### 추가 (2026-11-06, v2.1): 너무 빠름, 디스크 이미지 유지
 - 사용자 보고(v2.0 실기): "너무 빨라서 게임을 할 수가 없어" → `Enhance Disk Speed = 0`으로 바꾸니 속도 정상. 원인은 디스크 가속: Disk II 모터가 돌면 프레임당 최대 100프레임(LinAppleCore `full_speed_disk_iterations`)을 돌림. 모터를 켠 채로 진행되는 게임은 플레이 중에도 가속. 예전엔 화면 확대가 CPU를 다 써서 가려져 있었음
@@ -184,6 +196,8 @@ LinApple 패치:
 9. 빠른 소프트웨어 확대(열 표 + 원본 줄 한 번만 확대)
 10. 소리 나는 동안 디스크 가속 안 함, 속도 변경 OSD
 11. 고른 플로피·하드 이미지 유지(SmartPort 상태 질의 버그 수정)
+12. 소리·타이밍 통계(10초마다), `Sound Buffer`
+13. 바뀐 줄만 그리기, 모킹보드 좌우 먼저 섞기
 
 ## 5. 다시 빌드하는 법
 
@@ -207,7 +221,7 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 
 - [ ] 실기 테스트 결과 반영 (그래픽 모드, 사운드 카드(`sound-cards.txt`), 무선랜 칩 모델)
 - [ ] X61s에서 v2.1 확인: 게임 속도(디스크 가속 켠 채로), 볼륨 버튼(thinkpad_acpi), 디스크 유지
-- [ ] 실기에서 "소리가 비정상" 원인 찾기: `system-info.txt`와 증상 받기
+- [ ] X61s v2.2: 모킹보드 소리가 괜찮은지, 아니면 F12로 끈 뒤 `system-info.txt`의 timing 줄 받기 (late/dropped가 많으면 CPU, short만 많으면 장치 → `Sound Device = plughw:0,0` 시험)
 - [ ] LG gram 14Z970: BIOS(Boot Mode/CSM) 진입 결과 대기
 - [ ] (선택) 맥 QEMU 확인용 저해상도(640x480) 부팅 옵션
 - [ ] 실기에서 해상도별 속도 확인 (특히 auto·1280x1024 이상)

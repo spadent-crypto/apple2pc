@@ -166,5 +166,7 @@ LinApple 패치:
 9. 빠른 소프트웨어 확대: 열 위치 표 + 원본 줄을 한 번만 확대해 복사 (1024x768에서 CPU 약 1/4, 그림은 같음)
 10. 소리가 나는 동안은 디스크 가속을 하지 않음(AppleWin과 같은 규칙: 스피커 0.2초, 모킹보드 0.1초). 키패드 +/-/*, ScrollLock 속도 변경을 화면에 표시
 11. 고른 플로피·하드디스크 이미지를 다음 부팅에도 유지 (SmartPort 상태 질의가 결과를 돌려주지 않던 버그 수정, 하드 선택·꺼내기 때 바로 저장)
+12. 10초마다 프레임 지연·소리 모자람 통계를 로그에 남김(`system-info.txt`에 들어감), `Sound Buffer`(ms) 설정
+13. 바뀐 줄만 다시 그리기(안 바뀐 화면은 비교만), 모킹보드 6채널을 좌우로 먼저 섞은 뒤 리샘플링
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

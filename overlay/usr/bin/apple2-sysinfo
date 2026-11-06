@@ -4,14 +4,16 @@
 # governor, the screen mode, the sound card and, once LinApple has opened
 # it, the sound device's settings.
 #
-# Usage: apple2-sysinfo   (run in the background once LinApple starts)
+# Usage: apple2-sysinfo       (in the background once LinApple starts)
+#        apple2-sysinfo now   (again when LinApple has quit: adds how the
+#                              emulation and the sound card kept time)
 
 DATA=/media/apple2
 OUT=$DATA/system-info.txt
 TMP=/run/system-info.txt
 
 # Give LinApple time to open the sound device.
-sleep 12
+[ "$1" = now ] || sleep 12
 
 cpu_line() {
 	for c in /sys/devices/system/cpu/cpu[0-9]*; do
@@ -37,6 +39,16 @@ cpu_line() {
 		echo "  no CPU clock control (cpufreq) on this PC"
 	fi
 	echo "  load: $(cat /proc/loadavg)"
+	for z in /sys/class/thermal/thermal_zone*; do
+		[ -r "$z/temp" ] || continue
+		echo "  ${z##*/} ($(cat "$z/type" 2>/dev/null)): $(($(cat "$z/temp") / 1000)) C"
+	done
+	for t in /sys/devices/system/cpu/cpu[0-9]*/thermal_throttle/core_throttle_count; do
+		[ -r "$t" ] || continue
+		c=${t%/thermal_throttle/*}
+		echo "  ${c##*/} heat throttling events: $(cat "$t")"
+	done
+	[ -n "$AUDIODEV" ] && echo "  sound device: $AUDIODEV"
 	echo
 	echo "[Screen]"
 	echo "  mode: $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)" \
@@ -56,8 +68,14 @@ cpu_line() {
 	echo "[Memory]"
 	sed -n 's/^\(MemTotal\|MemAvailable\):[[:space:]]*/  \1 /p' /proc/meminfo
 	echo
+	echo "[Sound and timing, every 10 s while LinApple ran]"
+	echo "  late/dropped: frames the emulation could not finish in time"
+	echo "  short: the sound card asked for more than was ready (a gap)"
+	echo "  skipped: sound thrown away because too much was waiting"
+	grep -E "^(audio|timing):" /run/linapple.log 2>/dev/null | tail -n 40 | sed 's/^/  /'
+	echo
 	echo "[LinApple messages]"
-	tail -n 20 /run/linapple.log 2>/dev/null | sed 's/^/  /'
+	grep -vE "^timing:" /run/linapple.log 2>/dev/null | tail -n 20 | sed 's/^/  /'
 } >"$TMP" 2>&1
 
 sed 's/$/\r/' "$TMP" >"$OUT" 2>/dev/null && sync

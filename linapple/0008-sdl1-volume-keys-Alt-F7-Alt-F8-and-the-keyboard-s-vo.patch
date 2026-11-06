@@ -1,7 +1,7 @@
 From a18507df471acc8e7d2fc4e43d4f8c7d3691204d Mon Sep 17 00:00:00 2001
 From: build <build@localhost>
 Date: Fri, 6 Nov 2026 07:17:13 +0900
-Subject: [PATCH 08/11] sdl1: volume keys (Alt+F7/Alt+F8 and the keyboard's
+Subject: [PATCH 08/13] sdl1: volume keys (Alt+F7/Alt+F8 and the keyboard's
  volume keys)
 
 Alt+F7 and Alt+F8, and the keyboard's Volume Down, Volume Up and Mute

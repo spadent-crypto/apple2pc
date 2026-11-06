@@ -1,0 +1,313 @@
+From adae61383b87aa8321a92ed61fe624b405348623 Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Fri, 6 Nov 2026 10:25:11 +0900
+Subject: [PATCH 12/13] sdl1: sound and timing report, Sound Buffer setting
+
+Every 10 s stderr gets how many frames ran late or were dropped and what
+the sound card callback met: calls, short reads (gaps) and their size,
+backlog thrown away, and the longest wait between callbacks; the device
+the sound opened as is logged once. 'Sound Buffer' (ms) in linapple.conf
+asks for a larger device buffer for a machine that stutters.
+---
+ src/frontends/common/AudioMixer.cpp | 43 ++++++++++++++++++++
+ src/frontends/common/AudioMixer.h   | 14 +++++++
+ src/frontends/common/FramePacer.cpp | 17 +++++++-
+ src/frontends/common/FramePacer.h   |  7 ++++
+ src/frontends/sdl1/Main.cpp         | 62 +++++++++++++++++++++++++++++
+ tests/test_frame_pacer.cpp          | 21 ++++++++++
+ 6 files changed, 163 insertions(+), 1 deletion(-)
+
+diff --git a/src/frontends/common/AudioMixer.cpp b/src/frontends/common/AudioMixer.cpp
+index f6125f5d..9a31158c 100644
+--- a/src/frontends/common/AudioMixer.cpp
++++ b/src/frontends/common/AudioMixer.cpp
+@@ -4,6 +4,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
+@@ -35,6 +36,19 @@ uint32_t output_rate_hz = 0;
+ size_t capacity_samples = 0;
+ size_t cushion_samples = 0;
+ 
++std::atomic<uint64_t> stat_calls{0};
++std::atomic<uint64_t> stat_short_calls{0};
++std::atomic<uint64_t> stat_short_samples{0};
++std::atomic<uint64_t> stat_skipped_samples{0};
++std::atomic<uint32_t> stat_max_gap_ms{0};
++int64_t stat_last_call_ms = 0;  // audio thread only
++
++auto steady_ms() -> int64_t {
++  return std::chrono::duration_cast<std::chrono::milliseconds>(
++             std::chrono::steady_clock::now().time_since_epoch())
++      .count();
++}
++
+ // Symmetric rails: -1.0 and +1.0 map to -32767 and +32767, so a full-scale
+ // signal stays symmetric instead of gaining a half-LSB bias from -32768.
+ auto float_to_pcm16(float v) noexcept -> int16_t {
+@@ -639,6 +653,18 @@ auto audio_mixer_get_samples(int16_t* out, size_t num_samples) -> void {
+     return;
+   }
+ 
++  {
++    const int64_t now = steady_ms();
++    if (stat_last_call_ms != 0) {
++      const auto gap = static_cast<uint32_t>(now - stat_last_call_ms);
++      if (gap > stat_max_gap_ms.load(std::memory_order_relaxed)) {
++        stat_max_gap_ms.store(gap, std::memory_order_relaxed);
++      }
++    }
++    stat_last_call_ms = now;
++    stat_calls.fetch_add(1, std::memory_order_relaxed);
++  }
++
+   bool any_samples = false;
+   for (size_t slot = 0; slot < max_audio_slots; ++slot) {
+     if (mixer_slots[slot].active.load(std::memory_order_acquire) &&
+@@ -679,6 +705,12 @@ auto audio_mixer_get_samples(int16_t* out, size_t num_samples) -> void {
+     if (filled > target_backlog) {
+       sample_buffer_skip(sb,
+                          (filled - target_backlog) & ~static_cast<size_t>(1));
++      stat_skipped_samples.fetch_add(filled - target_backlog,
++                                     std::memory_order_relaxed);
++    } else if (filled > 0 && filled < num_samples) {
++      stat_short_calls.fetch_add(1, std::memory_order_relaxed);
++      stat_short_samples.fetch_add(num_samples - filled,
++                                   std::memory_order_relaxed);
+     }
+   }
+ 
+@@ -710,3 +742,14 @@ auto audio_mixer_get_samples(int16_t* out, size_t num_samples) -> void {
+     done += chunk;
+   }
+ }
++
++auto audio_mixer_take_stats() -> AudioMixerStats {
++  AudioMixerStats out;
++  out.calls = stat_calls.exchange(0, std::memory_order_relaxed);
++  out.short_calls = stat_short_calls.exchange(0, std::memory_order_relaxed);
++  out.short_samples = stat_short_samples.exchange(0, std::memory_order_relaxed);
++  out.skipped_samples =
++      stat_skipped_samples.exchange(0, std::memory_order_relaxed);
++  out.max_gap_ms = stat_max_gap_ms.exchange(0, std::memory_order_relaxed);
++  return out;
++}
+diff --git a/src/frontends/common/AudioMixer.h b/src/frontends/common/AudioMixer.h
+index 41ed98cb..405b0787 100644
+--- a/src/frontends/common/AudioMixer.h
++++ b/src/frontends/common/AudioMixer.h
+@@ -43,4 +43,18 @@ auto audio_mixer_set_channel_tap_callback(AudioChannelTapCallback cb) -> void;
+ 
+ auto audio_mixer_get_samples(int16_t* out, size_t num_samples) -> void;
+ 
++// What the device callback met since the last call (counts reset): how
++// often a source with sound had less than the device asked for (it plays a
++// gap) and by how much, how much backlog was thrown away to keep the delay
++// down, and the longest wait between two callbacks. For finding out on a
++// real machine whether the emulation or the sound card falls behind.
++struct AudioMixerStats {
++  uint64_t calls = 0;
++  uint64_t short_calls = 0;
++  uint64_t short_samples = 0;
++  uint64_t skipped_samples = 0;
++  uint32_t max_gap_ms = 0;
++};
++auto audio_mixer_take_stats() -> AudioMixerStats;
++
+ auto audio_mixer_set_fade(FadeType fade_type) -> void;
+diff --git a/src/frontends/common/FramePacer.cpp b/src/frontends/common/FramePacer.cpp
+index 58a07288..7f719035 100644
+--- a/src/frontends/common/FramePacer.cpp
++++ b/src/frontends/common/FramePacer.cpp
+@@ -62,14 +62,29 @@ auto FramePacer::wait_for_next_frame() -> void {
+ 
+   if ((now - deadline_ns_) > (resync_after_frames * period)) {
+     deadline_ns_ = now;
++    ++dropped_;
+     return;
+   }
+ 
+-  if (deadline_ns_ > now && sleep_until_ != nullptr) {
++  if (deadline_ns_ <= now) {
++    ++behind_;
++  } else if (sleep_until_ != nullptr) {
+     sleep_until_(deadline_ns_);
+   }
+ }
+ 
++auto FramePacer::take_late_counts(uint32_t* behind, uint32_t* dropped)
++    -> void {
++  if (behind != nullptr) {
++    *behind = behind_;
++  }
++  if (dropped != nullptr) {
++    *dropped = dropped_;
++  }
++  behind_ = 0;
++  dropped_ = 0;
++}
++
+ auto frame_pacer_init(FramePacer* pacer, FrameClockNowFn now,
+                       FrameClockSleepUntilFn sleep_until) -> void {
+   if (pacer == nullptr) {
+diff --git a/src/frontends/common/FramePacer.h b/src/frontends/common/FramePacer.h
+index 43c0431d..6470addd 100644
+--- a/src/frontends/common/FramePacer.h
++++ b/src/frontends/common/FramePacer.h
+@@ -38,11 +38,18 @@ class FramePacer {
+   // deadline describing a past that no longer applies.
+   auto resync() -> void;
+ 
++  // Frames that found their deadline already gone (no sleep at all), and
++  // times the loop fell so far behind that the deadline was dropped; both
++  // reset by the call.
++  auto take_late_counts(uint32_t* behind, uint32_t* dropped) -> void;
++
+  private:
+   FrameClockNowFn now_;
+   FrameClockSleepUntilFn sleep_until_;
+   int64_t deadline_ns_ = 0;
+   bool armed_ = false;
++  uint32_t behind_ = 0;
++  uint32_t dropped_ = 0;
+ };
+ 
+ auto frame_pacer_init(FramePacer* pacer, FrameClockNowFn now = nullptr,
+diff --git a/src/frontends/sdl1/Main.cpp b/src/frontends/sdl1/Main.cpp
+index 512e8189..119a054d 100644
+--- a/src/frontends/sdl1/Main.cpp
++++ b/src/frontends/sdl1/Main.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ 
++#include <array>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdio>
+@@ -67,6 +68,22 @@ auto ds_init() -> bool {
+   desired.format = AUDIO_S16SYS;
+   desired.samples =
+       static_cast<Uint16>(audio_device_buffer_samples(fallback_rate_hz));
++  // "Sound Buffer" (ms) in linapple.conf asks for a larger device buffer
++  // (the nearest power of two in samples), for a sound card or CPU that
++  // cannot keep the default one fed without gaps.
++  uint32_t buffer_ms = 0;
++  if (config_load_int("Configuration", "Sound Buffer", &buffer_ms) &&
++      buffer_ms >= 10 && buffer_ms <= 500) {
++    const uint32_t wanted = fallback_rate_hz * buffer_ms / 1000;
++    uint32_t samples = 256;
++    while (samples * 2 <= wanted && samples < 32768) {
++      samples *= 2;
++    }
++    if (samples < 32768 && (wanted - samples) > ((samples * 2) - wanted)) {
++      samples *= 2;
++    }
++    desired.samples = static_cast<Uint16>(samples);
++  }
+   desired.callback = sdl1_audio_callback;
+   desired.userdata = nullptr;
+ 
+@@ -76,6 +93,15 @@ auto ds_init() -> bool {
+   }
+ 
+   const auto device_rate_hz = static_cast<uint32_t>(obtained.freq);
++  {
++    std::array<char, 32> driver{};
++    SDL_AudioDriverName(driver.data(), static_cast<int>(driver.size()));
++    std::fprintf(stderr,
++                 "audio: %s, %d Hz, %d channels, %d-sample buffer "
++                 "(asked %d Hz, %d samples)\n",
++                 driver.data(), obtained.freq, obtained.channels,
++                 obtained.samples, desired.freq, desired.samples);
++  }
+ 
+   if (!audio_dump_file.empty()) {
+     audio_dumper_initialize(&audio_dumper, audio_dump_file.c_str(),
+@@ -131,8 +157,43 @@ auto sys_input() -> void {
+   }
+ }
+ 
++// Every 10 s on stderr (the boot image keeps it in /run/linapple.log, and
++// system-info.txt takes its tail): whether the loop kept up with the
++// machine, and whether the sound card got its samples in time.
++auto report_timing(FramePacer& pacer, uint32_t& last_ms, uint32_t& frames)
++    -> void {
++  ++frames;
++  const uint32_t now = SDL_GetTicks();
++  if (last_ms == 0) {
++    last_ms = now;
++    return;
++  }
++  if (now - last_ms < 10000) {
++    return;
++  }
++  uint32_t behind = 0;
++  uint32_t dropped = 0;
++  pacer.take_late_counts(&behind, &dropped);
++  const AudioMixerStats a = audio_mixer_take_stats();
++  std::fprintf(stderr,
++               "timing: %u frames in %u ms, %u late, %u dropped; audio: %llu "
++               "calls, %llu short (%llu samples), %llu skipped, longest "
++               "wait %u ms\n",
++               frames, now - last_ms, behind, dropped,
++               static_cast<unsigned long long>(a.calls),
++               static_cast<unsigned long long>(a.short_calls),
++               static_cast<unsigned long long>(a.short_samples),
++               static_cast<unsigned long long>(a.skipped_samples),
++               a.max_gap_ms);
++  std::fflush(stderr);
++  frames = 0;
++  last_ms = now;
++}
++
+ auto enter_message_loop() -> void {
+   FramePacer pacer;
++  uint32_t report_ms = 0;
++  uint32_t report_frames = 0;
+   while (system_state.mode != app_mode_exit) {
+     sys_input();
+     if (system_state.mode == app_mode_exit) {
+@@ -155,6 +216,7 @@ auto enter_message_loop() -> void {
+       pacer.resync();
+       SDL_Delay(0);
+     }
++    report_timing(pacer, report_ms, report_frames);
+   }
+ }
+ 
+diff --git a/tests/test_frame_pacer.cpp b/tests/test_frame_pacer.cpp
+index c19142bc..3e272297 100644
+--- a/tests/test_frame_pacer.cpp
++++ b/tests/test_frame_pacer.cpp
+@@ -212,3 +212,24 @@ TEST_CASE("Frame Pacer: A Machine Type Change Takes Effect Next Frame") {
+   pacer.wait_for_next_frame();
+   CHECK(now_ns - after_ntsc == PAL_PERIOD_NS);
+ }
++
++TEST_CASE("Frame pacer: counts frames that ran late and deadlines dropped") {
++  ScopedPacerWorld world(NTSC_FRAME_CYCLES, clock_6502_ntsc);
++  FramePacer pacer(fake_now, fake_sleep_until);
++
++  pacer.wait_for_next_frame();  // on time: sleeps
++  now_ns += NTSC_PERIOD_NS * 2;  // a slow frame: its deadline is gone
++  pacer.wait_for_next_frame();
++  now_ns += NTSC_PERIOD_NS * 20;  // far behind: the deadline is dropped
++  pacer.wait_for_next_frame();
++
++  uint32_t behind = 99;
++  uint32_t dropped = 99;
++  pacer.take_late_counts(&behind, &dropped);
++  CHECK(behind == 1);
++  CHECK(dropped == 1);
++
++  pacer.take_late_counts(&behind, &dropped);
++  CHECK(behind == 0);
++  CHECK(dropped == 0);
++}
+-- 
+2.43.0
+

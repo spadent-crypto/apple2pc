@@ -48,6 +48,10 @@ case $prio in
 sharp) mode=sharp ;;
 *) mode=aspect ;;
 esac
+# Sound settings added in v2.2, for a linapple.conf from before.
+grep -q '^Sound Buffer' "$CONF" || sed -i '/^\[Configuration\]/a Sound Buffer = 23\r' "$CONF"
+grep -q '^Sound Device' "$CONF" || sed -i '/^\[Configuration\]/a Sound Device = default\r' "$CONF"
+
 # Floppy images chosen with F3 / F4 come back at the next start (a
 # linapple.conf from v2.0 or before has this off).
 sed -i 's/^Slot 6 Autoload[ \t]*=[ \t]*0/Slot 6 Autoload = 1/' "$CONF"
@@ -115,6 +119,11 @@ export SDL_VIDEODRIVER=fbcon
 export SDL_FBDEV=/dev/fb0
 export SDL_NOMOUSE=1
 export SDL_AUDIODRIVER=alsa
+# Sound Device in linapple.conf: an ALSA device other than "default".
+dev=$(sed -n 's/^Sound Device[ \t]*=[ \t]*\([^ \t\r]*\).*/\1/p' "$CONF" | head -n 1)
+if [ -n "$dev" ] && [ "$dev" != default ]; then
+	export AUDIODEV="$dev"
+fi
 
 cd "$DATA" || cd /
 # CPU clock, screen mode and sound device settings into
@@ -122,6 +131,8 @@ cd "$DATA" || cd /
 /usr/bin/apple2-sysinfo &
 /usr/bin/linapple -c "$CONF" -f >"$LOG" 2>&1
 rc=$?
+# Again now that LinApple has quit, with its sound and timing counts.
+/usr/bin/apple2-sysinfo now
 
 sync
 if [ $rc -ne 0 ] && [ ! -f "$APPLE2PC_REBOOT_FLAG" ]; then
