@@ -1,0 +1,45 @@
+From d442fc74a773282e69686b9624708302d6aea195 Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Fri, 6 Nov 2026 21:39:14 +0900
+Subject: [PATCH 15/15] Volume keys: fall back to the first mixer control with
+ a level
+
+A USB sound device may not call its volume Master, PCM, Speaker, Front or
+Headphone.
+---
+ src/frontends/sdl1/Volume.cpp | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/frontends/sdl1/Volume.cpp b/src/frontends/sdl1/Volume.cpp
+index e71e0ea6..f77d18ed 100644
+--- a/src/frontends/sdl1/Volume.cpp
++++ b/src/frontends/sdl1/Volume.cpp
+@@ -65,6 +65,25 @@ auto main_control() -> const std::string& {
+         break;
+       }
+     }
++    // A USB sound device may name its volume otherwise: take the first
++    // control that has a level.
++    if (control.empty()) {
++      const std::string list = run("amixer scontrols");
++      size_t at = 0;
++      while ((at = list.find("Simple mixer control '", at)) !=
++             std::string::npos) {
++        at += 22;
++        const size_t end = list.find('\'', at);
++        if (end == std::string::npos) {
++          break;
++        }
++        const std::string name = list.substr(at, end - at);
++        if (volume_parse_percent(run("amixer -M sget '" + name + "'")) >= 0) {
++          control = name;
++          break;
++        }
++      }
++    }
+   }
+   return control;
+ }
+-- 
+2.43.0
+

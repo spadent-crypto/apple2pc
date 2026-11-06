@@ -169,5 +169,6 @@ LinApple 패치:
 12. 10초마다 프레임 지연·소리 모자람 통계를 로그에 남김(`system-info.txt`에 들어감), `Sound Buffer`(ms) 설정
 13. 바뀐 줄만 다시 그리기(안 바뀐 화면은 비교만), 모킹보드 6채널을 좌우로 먼저 섞은 뒤 리샘플링
 14. `Mockingboard Stereo`(0~100) 설정: 모킹보드 좌우 분리 폭. Apple II PC 기본값 0(모노)
+15. 볼륨 키: 이름이 다른 볼륨 컨트롤(USB 사운드 등)이면 첫 컨트롤을 씀
 
 구성 요소와 라이선스: Linux(GPL-2.0), BusyBox(GPL-2.0), LinApple(GPL-2.0), SDL 1.2(LGPL-2.1), wpa_supplicant(BSD), GRUB(GPL-3.0), Ubuntu 패키지의 glibc·OpenSSL·ALSA 등, linux-firmware(각 펌웨어 라이선스). Apple II ROM은 LinApple 소스에 들어 있는 것을 씁니다.

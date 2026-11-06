@@ -49,6 +49,7 @@ cpu_line() {
 		echo "  ${c##*/} heat throttling events: $(cat "$t")"
 	done
 	[ -n "$AUDIODEV" ] && echo "  sound device: $AUDIODEV"
+	[ -n "$ALSA_CARD" ] && echo "  sound card used: $ALSA_CARD (USB audio)"
 	echo
 	echo "[Screen]"
 	echo "  mode: $(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)" \
@@ -58,6 +59,8 @@ cpu_line() {
 	echo
 	echo "[Sound]"
 	cat /proc/asound/cards 2>/dev/null || echo "  no sound card"
+	echo "  mixer controls of the card used:"
+	amixer scontrols 2>/dev/null | sed 's/^Simple mixer control /    /'
 	for p in /proc/asound/card*/pcm*p/sub0; do
 		[ -r "$p/hw_params" ] || continue
 		echo "  ${p#/proc/asound/}:"

@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.3 2026-11-06). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.4 2026-11-06). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-06 (v2.3: X61s에서 모킹보드 소리 정상 확인)
+마지막 갱신: 2026-11-06 (v2.4: USB 오디오 지원)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,13 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-06, v2.4): USB 오디오
+- 사용자 질문: "USB audio class 사운드는 지원하니?" → 커널 조각에 `CONFIG_SND_USB=n`이 있어 안 됐음
+- 커널: `CONFIG_SND_USB=y`, `CONFIG_SND_USB_AUDIO=m`
+- `apple2-sound`: USB 장치 목록이 멈출 때까지(최대 3초) 기다린 뒤 인터페이스 클래스 01(오디오)이 있으면 `snd-usb-audio`를 올리고, /proc/asound/cards의 USB-Audio 카드 번호를 /run/alsa-card에. 세션이 `ALSA_CARD`로 내보냄 → alsa.conf의 default pcm/ctl이 그 카드(amixer, SDL 모두). 즉 USB 오디오가 꽂혀 있으면 내장 대신 씀. 켠 뒤에 꽂은 것은 다음 부팅부터
+- USB 장치의 볼륨 컨트롤 이름이 다를 수 있음(QEMU: 'Audio Output Volume Control') → 세션과 볼륨 키(LinApple 패치 15)가 이름 목록에 없으면 첫 컨트롤을 씀. system-info.txt에 쓰는 카드의 컨트롤 목록
+- QEMU 확인: AC'97 + `-device qemu-xhci -device usb-audio`(EHCI는 속도 안 맞음) → card 1 USB 선택, 소리가 USB wav로 녹음됨, Alt+F7로 85→80 저장
 
 ### 추가 (2026-11-06, v2.3): 모킹보드 화음이 빠짐
 - 사용자 보고(v2.2, X61s): "음악을 들어보니 뭔가 화음이 빠지는게 있어"
@@ -207,6 +214,7 @@ LinApple 패치:
 12. 소리·타이밍 통계(10초마다), `Sound Buffer`
 13. 바뀐 줄만 그리기, 모킹보드 좌우 먼저 섞기
 14. `Mockingboard Stereo` 스테레오 폭
+15. 볼륨 키: 첫 컨트롤로 폴백(USB 사운드)
 
 ## 5. 다시 빌드하는 법
 

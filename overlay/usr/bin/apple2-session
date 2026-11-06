@@ -84,6 +84,11 @@ done
 # Sound card: PCI drivers, then ISA cards (APPLE2/sound.txt). Before
 # LinApple, which opens the sound device when it starts.
 /usr/bin/apple2-sound
+# A USB audio device found at start-up is the one ALSA uses.
+if [ -s /run/alsa-card ]; then
+	ALSA_CARD=$(cat /run/alsa-card)
+	export ALSA_CARD
+fi
 
 # ThinkPad volume and mute buttons (after the sound card, so it stays
 # the first card).
@@ -109,6 +114,11 @@ for ctl in Master PCM Speaker Front Headphone; do
 		amixer -q sset "$ctl" 100% unmute 2>/dev/null
 	fi
 done
+# A USB sound device may name its volume otherwise: the first control.
+if [ -z "$main" ]; then
+	ctl=$(amixer scontrols 2>/dev/null | sed -n "s/^Simple mixer control '\([^']*\)'.*/\1/p" | head -n 1)
+	[ -n "$ctl" ] && amixer -q -M sset "$ctl" "$vol%" unmute 2>/dev/null
+fi
 
 export HOME="$DATA/.home"
 # The display settings menu (Alt+F9) edits this file and, when the

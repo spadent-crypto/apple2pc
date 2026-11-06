@@ -4,6 +4,10 @@
 # 1. The onboard chips (AC'97, HD Audio) and the common PCI cards are built
 #    into the kernel. Drivers for the other PCI audio devices present are
 #    loaded here.
+#    A USB audio device (USB Audio Class: sound cards, headsets, DACs)
+#    plugged in at start-up is loaded too and used instead of the onboard
+#    sound (its card number goes to /run/alsa-card; the session passes it
+#    to ALSA as ALSA_CARD).
 # 2. With still no card, ISA cards are tried: first the lines of
 #    APPLE2/sound.txt (module and port/IRQ/DMA settings, e.g.
 #    "snd-sb16 port=0x220 irq=5 dma8=1 dma16=5"), then ISA PnP cards, then
@@ -58,8 +62,40 @@ for d in /sys/bus/pci/devices/*; do
 	esac
 done
 
+# 1b. USB audio. USB devices may still be turning up: wait until the list
+# stops changing (at most 3 s), then look for an audio interface (class 01).
+n=-1
+i=0
+while [ $i -lt 6 ]; do
+	m=$(ls /sys/bus/usb/devices 2>/dev/null | wc -l)
+	[ "$m" = "$n" ] && break
+	n=$m
+	sleep 0.5
+	i=$((i + 1))
+done
+usb_found=""
+for f in /sys/bus/usb/devices/*/bInterfaceClass; do
+	[ "$(cat "$f" 2>/dev/null)" = 01 ] || continue
+	echo "usb audio interface: ${f%/bInterfaceClass}" >>"$LOG"
+	modprobe snd-usb-audio 2>>"$LOG"
+	i=0
+	while [ $i -lt 10 ]; do
+		usb_card=$(sed -n 's/^ *\([0-9][0-9]*\) .*USB-Audio.*/\1/p' /proc/asound/cards | head -n 1)
+		[ -n "$usb_card" ] && break
+		sleep 0.3
+		i=$((i + 1))
+	done
+	if [ -n "$usb_card" ]; then
+		echo "$usb_card" >/run/alsa-card
+		usb_found="USB audio (card $usb_card, used for the sound)"
+	fi
+	break
+done
+
 skip_isa=""
-if has_card; then
+if [ -n "$usb_found" ]; then
+	found=$usb_found
+elif has_card; then
 	found="PCI / onboard"
 else
 	# 2a. The user's own settings.
