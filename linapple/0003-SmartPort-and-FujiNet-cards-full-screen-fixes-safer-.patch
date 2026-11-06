@@ -1,7 +1,7 @@
 From dc75c0e2d7c7e9a5eb4335e38989863a6764b657 Mon Sep 17 00:00:00 2001
 From: James <james@localhost>
 Date: Tue, 20 Oct 2026 07:18:21 +0900
-Subject: [PATCH 03/13] SmartPort and FujiNet cards; full-screen fixes; safer
+Subject: [PATCH 03/14] SmartPort and FujiNet cards; full-screen fixes; safer
  slot saves
 
 New cards, sharing one firmware and one 6502-facing core

@@ -51,6 +51,7 @@ esac
 # Sound settings added in v2.2, for a linapple.conf from before.
 grep -q '^Sound Buffer' "$CONF" || sed -i '/^\[Configuration\]/a Sound Buffer = 23\r' "$CONF"
 grep -q '^Sound Device' "$CONF" || sed -i '/^\[Configuration\]/a Sound Device = default\r' "$CONF"
+grep -q '^Mockingboard Stereo' "$CONF" || sed -i '/^\[Configuration\]/a Mockingboard Stereo = 0\r' "$CONF"
 
 # Floppy images chosen with F3 / F4 come back at the next start (a
 # linapple.conf from v2.0 or before has this off).

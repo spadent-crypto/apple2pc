@@ -1,7 +1,7 @@
 From 634b769391459a1c76f4f68c85ab65d0bed66db9 Mon Sep 17 00:00:00 2001
 From: build <build@localhost>
 Date: Wed, 4 Nov 2026 15:53:45 +0900
-Subject: [PATCH 07/13] sdl1: display settings menu (Alt+F9)
+Subject: [PATCH 07/14] sdl1: display settings menu (Alt+F9)
 
 A full-screen menu for the Apple II PC boot image: screen resolution,
 scaling (aspect or sharp) and monitor shape. It edits the display.txt

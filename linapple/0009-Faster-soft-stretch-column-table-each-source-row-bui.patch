@@ -1,7 +1,7 @@
 From 6a00516b70e8a72c4386d8b2f27b1a471bf12c67 Mon Sep 17 00:00:00 2001
 From: James <spadent@gmail.com>
 Date: Fri, 6 Nov 2026 07:21:47 +0900
-Subject: [PATCH 09/13] Faster soft stretch: column table, each source row
+Subject: [PATCH 09/14] Faster soft stretch: column table, each source row
  built once
 
 The per-pixel 64-bit division was a __divdi3 call on 32-bit x86. Columns

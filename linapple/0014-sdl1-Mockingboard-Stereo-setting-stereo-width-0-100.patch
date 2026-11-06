@@ -1,0 +1,68 @@
+From 433dd082a94aa3de32234710feb8bef1a4a59f25 Mon Sep 17 00:00:00 2001
+From: James <spadent@gmail.com>
+Date: Fri, 6 Nov 2026 10:58:32 +0900
+Subject: [PATCH 14/14] sdl1: Mockingboard Stereo setting (stereo width 0-100)
+
+A source with voices hard-panned left and right (the Mockingboard: chip
+1 left, chip 2 right) can be narrowed down to mono, so a single speaker
+that plays one side only still gets every voice. 100 or no setting keeps
+the card's own stereo.
+---
+ src/frontends/sdl1/Main.cpp | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/src/frontends/sdl1/Main.cpp b/src/frontends/sdl1/Main.cpp
+index 119a054d..ee6dbe1a 100644
+--- a/src/frontends/sdl1/Main.cpp
++++ b/src/frontends/sdl1/Main.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ 
++#include <algorithm>
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
+@@ -48,6 +49,32 @@ auto SDLCALL sdl1_audio_callback(void* userdata, Uint8* stream, int len)
+   }
+ }
+ 
++// "Mockingboard Stereo" in linapple.conf, 0-100: how far apart a source's
++// left and right voices are. 100 keeps them as the card has them (the
++// Mockingboard's first chip all left, the second all right); 0 puts every
++// voice in both, for a single speaker that plays one side only. Sources
++// already in the middle (the speaker) are left as they are.
++auto apply_stereo_width(int slot, const PeripheralAudioInfo* info) -> void {
++  if (info == nullptr || info->num_channels < 2) {
++    return;
++  }
++  uint32_t width = 100;
++  if (!config_load_int("Configuration", "Mockingboard Stereo", &width) ||
++      width >= 100) {
++    return;
++  }
++  const float own = 0.5F + (static_cast<float>(width) / 200.0F);
++  const float other = 1.0F - own;
++  const size_t channels =
++      std::min<size_t>(info->num_channels, PERIPHERAL_AUDIO_MAX_CHANNELS);
++  for (size_t c = 0; c < channels; ++c) {
++    const float left = info->channels[c].default_pan_left;
++    const float right = info->channels[c].default_pan_right;
++    audio_mixer_set_channel_pan(slot, c, (own * left) + (other * right),
++                                (other * left) + (own * right));
++  }
++}
++
+ }  // namespace
+ 
+ auto ds_init() -> bool {
+@@ -117,6 +144,7 @@ auto ds_init() -> bool {
+       [](int slot, const char* peripheral_id,
+          const PeripheralAudioInfo* info) -> void {
+         audio_mixer_register_source(slot, peripheral_id, info);
++        apply_stereo_width(slot, info);
+       });
+ 
+   linapple_set_audio_source_unregister_callback(
+-- 
+2.43.0
+

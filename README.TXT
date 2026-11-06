@@ -20,6 +20,10 @@ system-info.txt   CPU 클럭·온도, 화면 모드, 사운드 장치 상태 (�
                   느리거나 소리가 끊기면 게임을 1분쯤 돌리고 F12로 끈 뒤 이 파일을 보세요.
                   소리가 끊기면 linapple.conf 의 Sound Device = plughw:0,0 도 해 보세요.
 
+linapple.conf 의 Mockingboard Stereo (0~100)
+  0   모킹보드의 6음을 좌우 모두로 (기본값, 노트북 스피커 하나에서도 화음이 다 들림)
+  100 실제 카드처럼 첫 칩은 왼쪽, 둘째 칩은 오른쪽 (헤드폰, 스테레오 스피커)
+
 화면
 ----
 Alt+F9 화면 설정 메뉴에서 고르거나, display.txt에서 LCD 패널의 원래 해상도
