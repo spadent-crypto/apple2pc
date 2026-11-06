@@ -70,6 +70,7 @@ cpu_line() {
 	echo
 	echo "[Memory]"
 	sed -n 's/^\(MemTotal\|MemAvailable\):[[:space:]]*/  \1 /p' /proc/meminfo
+	echo "  written out to the USB after: $(cat /proc/sys/vm/dirty_expire_centisecs 2>/dev/null)0 ms"
 	echo
 	echo "[Sound and timing, every 10 s while LinApple ran]"
 	echo "  late/dropped: frames the emulation could not finish in time"

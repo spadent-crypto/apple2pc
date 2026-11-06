@@ -25,6 +25,12 @@ find_data_dev() {
 	return 1
 }
 
+# This PC is often just switched off or the USB pulled: whatever is
+# written (game saves into disk images, save states, settings) goes out to
+# the USB within about 2 s instead of the usual 30.
+echo 100 >/proc/sys/vm/dirty_expire_centisecs 2>/dev/null
+echo 100 >/proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
+
 mkdir -p "$DATA"
 DEV=$(find_data_dev)
 # Written to a bigger disk, the APPLE2 partition grows to fill it (once).

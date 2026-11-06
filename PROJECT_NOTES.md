@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.4 2026-11-06). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-06 (v2.4: USB 오디오 지원)
+마지막 갱신: 2026-11-06 (v2.5: 그냥 꺼도 2초 안에 USB에 기록)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,13 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 유선 DHCP 자동, 무선은 `APPLE2\wifi.txt`(SSID/PASSWORD), NTP 시간 동기, `network.txt`에 IP 기록
+
+### 추가 (2026-11-06, v2.5): 그냥 끄거나 USB를 뽑을 때
+- 사용자 질문: "게임하다가 그냥 끄거나 usb를 뽑으면 파티션이나 fs이 망가지지 않아?"
+- 현재: 루트 ext4는 ro. APPLE2(FAT32)는 `rw,noatime,flush`. 플로피 쓰기는 모터가 멈출 때 트랙을 fwrite+fflush(커널까지만), SmartPort는 pwrite 후 1초 넘게 지났으면 fsync. 커널 기본 writeback은 30초라 마지막 저장이 최대 30초 메모리에 머묾
+- 세션: `vm.dirty_expire_centisecs=100`, `dirty_writeback_centisecs=100` → 쓴 것이 약 2초 안에 USB로. system-info.txt에 값
+- QEMU 확인: Alt+F7 두 번 뒤 4초 만에 QEMU quit(전원 끊기) → conf에 새 볼륨이 남아 있음, `fsck.fat -n`은 dirty bit 말고 오류 없음
+- 남는 것: 리눅스 vfat가 마운트 중 dirty bit를 켜서, 그냥 끄면 Windows가 검사를 물음(무해). 쓰는 바로 그 순간 끊기면 그 파일은 깨질 수 있음. 첫 부팅 파티션 늘리기 중에는 끄면 안 됨
 
 ### 추가 (2026-11-06, v2.4): USB 오디오
 - 사용자 질문: "USB audio class 사운드는 지원하니?" → 커널 조각에 `CONFIG_SND_USB=n`이 있어 안 됐음
