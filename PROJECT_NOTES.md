@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06, v2.6~v2.8·v3.0 2026-11-07). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06, v2.6~v2.8·v3.0·v3.1 2026-11-07). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-07 (v3.0: USB 1.1 부팅 — 읽는 양 20.1MB → 9.4MB, squashfs 루트)
+마지막 갱신: 2026-11-07 (v3.1: X61s 소리 안 남 대응 — 내장 사운드 카드를 기다림, USB는 재생 장치만)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,14 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 기본 꺼짐(v3.0). `APPLE2\wifi.txt`의 `WIRED=on` 또는 SSID가 있으면 부팅 20초 뒤 apple2-net(모듈 coldplug, 유선 DHCP, 무선, NTP), `network.txt`에 IP 기록
+
+### 추가 (2026-11-07, v3.1): X61s에서 소리가 안 나고 볼륨 버튼이 안 됨
+- 사용자 보고(v3.0): "X61에서는 소리가 나는데 X61s에서는 소리가 안 나고, 볼륨 버튼 동작이 없어졌어", USB 사운드카드는 없음
+- 확인: HDA·AD1984 코덱은 커널에 그대로(y), thinkpad_acpi와 의존 모듈 모두 이미지에 있음
+- 추정 원인: v3.0이 빨라져서 apple2-sound가 내장 HDA 카드 등록(커널이 백그라운드로 probe) 전에 `/proc/asound/cards`를 봄 → 카드 없음으로 판단, ISA 탐색, LinApple은 소리 장치 없이 시작, 볼륨 키는 컨트롤이 없음. CPU가 느린 X61s에서만 드러날 수 있음. QEMU에서는 카드가 먼저 떠서 재현 못 함
+- apple2-sound: PCI 오디오 장치(class 04)가 있으면 카드가 생길 때까지 최대 8초(0.2초 간격) 기다림, 기다린 시간을 기록. sound-cards.txt에 "[What was tried]"로 /run/sound.log 전체
+- 함께: USB 오디오는 재생 PCM(/proc/asound/cardN/pcm*p)이 있는 카드만 씀(웹캠·마이크 제외), sound.txt에 `USB_AUDIO=off`
+- 다음: X61s의 v3.0 sound-cards.txt(카드 없음/ISA 시도였는지)와 v3.1 결과
 
 ### 변경 (2026-11-07, v3.0): USB 1.1 부팅 시간 줄이기
 - 사용자: "USB 1.1 구형 노트북을 활용하려고 시작한 프로젝트인데 실제 해보니 부팅에 시간이 많이 걸려"
@@ -286,6 +294,7 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 - [ ] (선택) 화면 하단 드라이브 LED 표시 끄기 옵션 (`Show Leds = 0`)
 - [x] 네트워크 기본 끔 (v3.0, `WIRED=on`이나 SSID로 켬)
 - [ ] 실기 USB 1.1 노트북에서 v3.0 부팅 시간 재기 (전원 → LinApple 화면)
+- [ ] X61s v3.1: 소리와 볼륨 버튼이 돌아왔는지, sound-cards.txt의 "waited N ms"
 - [ ] (선택) FujiNet을 다시 쓰고 싶으면 2026-11-04 이전 커밋의 build.sh·overlay 참고
 - [ ] SuperSprite: StarSprite 데모·게임 디스크로 실제 동작 확인 (asimov `images/hardware/video/StarSprite-SuperSprite-Programs.zip`)
 - [ ] (선택) SuperSprite Echo II 음성(TMS5220) 구현

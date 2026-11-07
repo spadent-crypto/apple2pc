@@ -62,6 +62,23 @@ for d in /sys/bus/pci/devices/*; do
 	esac
 done
 
+# A built-in HD Audio or AC'97 chip may still be starting (the kernel
+# probes it in the background, a second or two on an old laptop): with a
+# PCI audio device present, wait for its card before deciding there is
+# none (at most 8 s), or the boot goes on silent and the ISA search runs.
+pci_audio=""
+for d in /sys/bus/pci/devices/*; do
+	case $(cat "$d/class" 2>/dev/null) in 0x04*) pci_audio=1 ;; esac
+done
+if [ -n "$pci_audio" ]; then
+	i=0
+	while ! has_card && [ $i -lt 40 ]; do
+		sleep 0.2
+		i=$((i + 1))
+	done
+	echo "PCI audio: waited $((i * 200)) ms for the card" >>"$LOG"
+fi
+
 # 1b. USB audio. USB devices may still be turning up: wait until the list
 # stops changing (at most 3 s), then look for an audio interface (class 01).
 n=-1
@@ -73,21 +90,37 @@ while [ $i -lt 6 ]; do
 	sleep 0.3
 	i=$((i + 1))
 done
+# Only a USB card that can play sound is used: a webcam or a microphone is
+# an audio device too, but has nothing to play on. "USB_AUDIO=off" in
+# sound.txt leaves USB sound alone.
+usb_audio_playback_card() {
+	for c in $(sed -n 's/^ *\([0-9][0-9]*\) .*USB-Audio.*/\1/p' /proc/asound/cards); do
+		ls -d /proc/asound/card"$c"/pcm*p >/dev/null 2>&1 && { echo "$c"; return 0; }
+	done
+	return 1
+}
 usb_found=""
+usb_off=""
+[ -f "$CONF" ] && tr -d '\r' <"$CONF" | grep -qiE '^[[:space:]]*USB_AUDIO[[:space:]]*=[[:space:]]*off' && usb_off=1
 for f in /sys/bus/usb/devices/*/bInterfaceClass; do
+	[ -z "$usb_off" ] || { echo "USB sound off (sound.txt)" >>"$LOG"; break; }
 	[ "$(cat "$f" 2>/dev/null)" = 01 ] || continue
 	echo "usb audio interface: ${f%/bInterfaceClass}" >>"$LOG"
 	modprobe snd-usb-audio 2>>"$LOG"
+	usb_card=""
 	i=0
 	while [ $i -lt 10 ]; do
-		usb_card=$(sed -n 's/^ *\([0-9][0-9]*\) .*USB-Audio.*/\1/p' /proc/asound/cards | head -n 1)
-		[ -n "$usb_card" ] && break
+		grep -q "USB-Audio" /proc/asound/cards && break
 		sleep 0.3
 		i=$((i + 1))
 	done
+	sleep 0.3
+	usb_card=$(usb_audio_playback_card)
 	if [ -n "$usb_card" ]; then
 		echo "$usb_card" >/run/alsa-card
 		usb_found="USB audio (card $usb_card, used for the sound)"
+	else
+		echo "USB audio device without playback (microphone/webcam): not used" >>"$LOG"
 	fi
 	break
 done
@@ -101,7 +134,7 @@ else
 	# 2a. The user's own settings.
 	if [ -f "$CONF" ]; then
 		tr -d '\r' <"$CONF" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
-			grep -v '^$' >/run/sound.lines
+			grep -v '^$' | grep -viE '^USB_AUDIO' >/run/sound.lines
 		while read -r line; do
 			case $line in
 			none | NONE) skip_isa=1; break ;;
@@ -152,6 +185,9 @@ fi
 	fi
 	echo
 	cat /proc/asound/cards 2>/dev/null
+	echo
+	echo "[What was tried]"
+	cat "$LOG" 2>/dev/null
 } | sed 's/$/\r/' >"$DATA/sound-cards.txt" 2>/dev/null
 
 [ -n "$found" ]
