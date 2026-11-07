@@ -3,9 +3,9 @@
 > 원본 저장소: https://github.com/spadent-crypto/apple2pc (main 브랜치)
 > 다시 시작할 때: "애플2 PC 이어서 하자"라고 하면 저장소에서 최신 상태를 받아 시작합니다.
 > 작업 환경(클라우드 컨테이너)의 파일은 세션이 끝나면 사라지므로, **저장소가 원본**입니다.
-> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06, v2.6~v2.8·v3.0·v3.1 2026-11-07). 표는 `images/README.md`.
+> 완성 이미지는 `images/`에 버전별로 커밋합니다 (v1.0 2026-10-20, v1.1~v1.8 2026-11-04, v1.9 2026-11-05, v2.0~v2.5 2026-11-06, v2.6~v2.8·v3.0~v3.2 2026-11-07). 표는 `images/README.md`.
 
-마지막 갱신: 2026-11-07 (v3.1: X61s 소리 안 남 대응 — 내장 사운드 카드를 기다림, USB는 재생 장치만)
+마지막 갱신: 2026-11-07 (v3.2: 삼성 센스 Q30/Q40 소리 느림 — AC'97 클럭 48000 고정)
 
 ## 1. 목표 (사용자 요구사항)
 
@@ -24,6 +24,14 @@
 - 세이브 슬롯 0~9: Ctrl+Shift+N 저장(BMP 캡처 함께), Ctrl+N 불러오기, F11/F10 썸네일 화면
 - (1차 당시) 슬롯 7 FujiNet, 6 Disk II, 5 SmartPort(하드 2 + UniDisk 3.5 2), 4 Mockingboard → 2026-11-04에 변경, 위 참고
 - 네트워크: 기본 꺼짐(v3.0). `APPLE2\wifi.txt`의 `WIRED=on` 또는 SSID가 있으면 부팅 20초 뒤 apple2-net(모듈 coldplug, 유선 DHCP, 무선, NTP), `network.txt`에 IP 기록
+
+### 추가 (2026-11-07, v3.2): 삼성 센스 Q30/Q40 소리가 느림
+- 사용자 보고: "삼성 센스 Q30, Q40에서는 사운드가 느리게 나와"
+- 두 기종 모두 Intel ICH 계열 AC'97(snd-intel8x0). 이 드라이버는 시작할 때 AC'97 코덱 클럭을 재는데, 커널에 내장(y)이면 부팅 초기에 재서 틀리는 일이 알려져 있음(LKML "intel8x0-snd module fails to correctly detect clock when compiled in kernel", "Sound plays at half speed; intel8x0 clock issue") → 재생이 느리고 음이 낮음
+- grub.cfg 커널 줄에 `snd_intel8x0.ac97_clock=48000`(재지 않고 48kHz). system-info.txt [Sound]에 intel8x0/ac97/clocking dmesg 줄
+- QEMU AC'97은 KVM 최적화 모드라 원래 재지 않음 → 재현 불가, 깨지지 않는 것만 확인
+- CPU가 원인일 수도 있음(Q30은 Pentium M ULV 약 1GHz): system-info.txt의 timing 줄(late/dropped)로 구분
+- 다음: Q30/Q40에서 v3.2 소리, 아니면 system-info.txt
 
 ### 추가 (2026-11-07, v3.1): X61s에서 소리가 안 나고 볼륨 버튼이 안 됨
 - 사용자 보고(v3.0): "X61에서는 소리가 나는데 X61s에서는 소리가 안 나고, 볼륨 버튼 동작이 없어졌어", USB 사운드카드는 없음
@@ -295,6 +303,7 @@ WORK=/경로 OUT=/경로 ./build.sh ...
 - [x] 네트워크 기본 끔 (v3.0, `WIRED=on`이나 SSID로 켬)
 - [ ] 실기 USB 1.1 노트북에서 v3.0 부팅 시간 재기 (전원 → LinApple 화면)
 - [ ] X61s v3.1: 소리와 볼륨 버튼이 돌아왔는지, sound-cards.txt의 "waited N ms"
+- [ ] 삼성 센스 Q30/Q40 v3.2: 소리 속도 정상인지 (아니면 system-info.txt timing/intel8x0 줄)
 - [ ] (선택) FujiNet을 다시 쓰고 싶으면 2026-11-04 이전 커밋의 build.sh·overlay 참고
 - [ ] SuperSprite: StarSprite 데모·게임 디스크로 실제 동작 확인 (asimov `images/hardware/video/StarSprite-SuperSprite-Programs.zip`)
 - [ ] (선택) SuperSprite Echo II 음성(TMS5220) 구현

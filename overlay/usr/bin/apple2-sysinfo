@@ -59,6 +59,7 @@ cpu_line() {
 	echo
 	echo "[Sound]"
 	cat /proc/asound/cards 2>/dev/null || echo "  no sound card"
+	dmesg 2>/dev/null | grep -iE "intel8x0|ac97|clocking" | sed 's/^/  /' | head -n 8
 	echo "  mixer controls of the card used:"
 	amixer scontrols 2>/dev/null | sed 's/^Simple mixer control /    /'
 	for p in /proc/asound/card*/pcm*p/sub0; do
